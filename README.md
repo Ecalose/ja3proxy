@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.svg" alt="JA3Proxy logo" width="520">
+</p>
+
 # JA3Proxy
 
 JA3Proxy is an HTTP/SOCKS5 proxy that uses

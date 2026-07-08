@@ -81,6 +81,7 @@ func TestParseFlagsAppliesArgs(t *testing.T) {
 		"-client", "Chrome",
 		"-version", "120",
 		"-fingerprint-config", "fingerprints.json",
+		"-upstream-tls-config", "upstream-tls.json",
 		"-upstream", "127.0.0.1:1080",
 		"-debug",
 	})
@@ -108,6 +109,9 @@ func TestParseFlagsAppliesArgs(t *testing.T) {
 	}
 	if app.Config.FingerprintConfig != "fingerprints.json" {
 		t.Fatalf("fingerprint config = %q, want fingerprints.json", app.Config.FingerprintConfig)
+	}
+	if app.Config.UpstreamTLSConfig != "upstream-tls.json" {
+		t.Fatalf("upstream TLS config = %q, want upstream-tls.json", app.Config.UpstreamTLSConfig)
 	}
 	if app.Config.Upstream != "127.0.0.1:1080" {
 		t.Fatalf("upstream = %q, want 127.0.0.1:1080", app.Config.Upstream)

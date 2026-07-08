@@ -10,12 +10,13 @@ import (
 )
 
 type TunnelHandler struct {
-	Debug             bool
-	CA                *CertificateAuthority
-	SessionKey        *SessionKeyHelper
-	TLSFingerprints   *TLSFingerprintStore
-	DefaultTLSClient  string
-	DefaultTLSVersion string
+	Debug               bool
+	CA                  *CertificateAuthority
+	SessionKey          *SessionKeyHelper
+	TLSFingerprints     *TLSFingerprintStore
+	UpstreamTLSProfiles *UpstreamTLSProfileStore
+	DefaultTLSClient    string
+	DefaultTLSVersion   string
 }
 
 func (handler *TunnelHandler) configuredTLSFingerprint() TLSFingerprint {
@@ -37,8 +38,52 @@ func (handler *TunnelHandler) configuredTLSFingerprint() TLSFingerprint {
 	}
 }
 
+func (handler *TunnelHandler) configuredUpstreamTLSProfile(host string) UpstreamTLSProfile {
+	if handler != nil && handler.UpstreamTLSProfiles != nil {
+		if profile, ok := handler.UpstreamTLSProfiles.Get(host); ok {
+			return profile
+		}
+	}
+	return upstreamTLSProfileFromFingerprint(handler.configuredTLSFingerprint())
+}
+
+type upstreamTLSConn struct {
+	net.Conn
+	negotiatedProtocol string
+}
+
+func (conn *upstreamTLSConn) NegotiatedProtocol() string {
+	if conn == nil {
+		return ""
+	}
+	return conn.negotiatedProtocol
+}
+
+func (handler *TunnelHandler) wrapUpstreamTLS(conn net.Conn, routeHost string, serverName string, nextProtos []string) (*upstreamTLSConn, error) {
+	profile := handler.configuredUpstreamTLSProfile(routeHost)
+	switch normalizeUpstreamTLSProtocol(profile.Protocol) {
+	case upstreamTLSProtocolUTLS:
+		uTLSConn, err := handler.utlsWrap(conn, serverName, nextProtos, TLSFingerprint{
+			Client:  profile.Client,
+			Version: profile.Version,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &upstreamTLSConn{
+			Conn:               uTLSConn,
+			negotiatedProtocol: uTLSConn.ConnectionState().NegotiatedProtocol,
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported upstream TLS protocol %q", profile.Protocol)
+	}
+}
+
 func (handler *TunnelHandler) customTLSWrap(conn net.Conn, sni string, nextProtos []string) (*utls.UConn, error) {
-	fingerprint := handler.configuredTLSFingerprint()
+	return handler.utlsWrap(conn, sni, nextProtos, handler.configuredTLSFingerprint())
+}
+
+func (handler *TunnelHandler) utlsWrap(conn net.Conn, sni string, nextProtos []string, fingerprint TLSFingerprint) (*utls.UConn, error) {
 	clientHelloID := utls.ClientHelloID{
 		Client: fingerprint.Client, Version: fingerprint.Version, Seed: nil, Weights: nil,
 	}
@@ -133,7 +178,8 @@ func (handler *TunnelHandler) generateCertificate(sni string) (tls.Certificate, 
 func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn net.Conn) {
 	defer destConn.Close()
 	defer clientConn.Close()
-	var destTLSConn *utls.UConn
+	var destTLSConn *upstreamTLSConn
+	routeHost := sni
 
 	config := &tls.Config{
 		InsecureSkipVerify: true,
@@ -148,7 +194,7 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 				return nil, fmt.Errorf("generate certificate: %w", err)
 			}
 
-			destTLSConn, err = handler.customTLSWrap(destConn, serverName, upstreamALPN(hello.SupportedProtos))
+			destTLSConn, err = handler.wrapUpstreamTLS(destConn, routeHost, serverName, upstreamALPN(hello.SupportedProtos))
 			if err != nil {
 				return nil, err
 			}
@@ -156,7 +202,7 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 			return &tls.Config{
 				InsecureSkipVerify: true,
 				Certificates:       []tls.Certificate{tlsCert},
-				NextProtos:         clientALPN(destTLSConn.ConnectionState().NegotiatedProtocol),
+				NextProtos:         clientALPN(destTLSConn.NegotiatedProtocol()),
 			}, nil
 		},
 	}

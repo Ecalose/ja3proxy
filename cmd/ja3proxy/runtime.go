@@ -15,20 +15,22 @@ import (
 )
 
 type App struct {
-	Config          *RunningConfig
-	CA              *CertificateAuthority
-	SessionKey      *SessionKeyHelper
-	TLSFingerprints *TLSFingerprintStore
+	Config              *RunningConfig
+	CA                  *CertificateAuthority
+	SessionKey          *SessionKeyHelper
+	TLSFingerprints     *TLSFingerprintStore
+	UpstreamTLSProfiles *UpstreamTLSProfileStore
 
 	watchFingerprintFile func(context.Context, string, time.Duration) error
 }
 
 func newDefaultApp() *App {
 	return &App{
-		Config:          &RunningConfig{},
-		CA:              &CertificateAuthority{},
-		SessionKey:      &SessionKeyHelper{},
-		TLSFingerprints: &TLSFingerprintStore{},
+		Config:              &RunningConfig{},
+		CA:                  &CertificateAuthority{},
+		SessionKey:          &SessionKeyHelper{},
+		TLSFingerprints:     &TLSFingerprintStore{},
+		UpstreamTLSProfiles: &UpstreamTLSProfileStore{},
 	}
 }
 
@@ -55,6 +57,9 @@ func (app *App) runWithContext(ctx context.Context) error {
 	if err := app.configureTLSFingerprint(ctx); err != nil {
 		return err
 	}
+	if err := app.configureUpstreamTLSProfiles(); err != nil {
+		return err
+	}
 
 	proxy, err := app.buildProxy()
 	if err != nil {
@@ -79,6 +84,7 @@ func (app *App) parseFlags(args []string) error {
 	flags.StringVar(&app.Config.TLSClient, "client", "Golang", "utls client")
 	flags.StringVar(&app.Config.TLSVersion, "version", "0", "utls client version")
 	flags.StringVar(&app.Config.FingerprintConfig, "fingerprint-config", "", "JSON file to hot-reload utls client/version")
+	flags.StringVar(&app.Config.UpstreamTLSConfig, "upstream-tls-config", "", "JSON file with upstream TLS profile routes")
 	flags.StringVar(&app.Config.Upstream, "upstream", "", "upstream proxy, e.g. 127.0.0.1:1080, socks5 only")
 	flags.BoolVar(&app.Config.Debug, "debug", false, "enable debug")
 	return flags.Parse(args)
@@ -135,6 +141,19 @@ func (app *App) watchTLSFingerprintFile(ctx context.Context, path string, interv
 	return app.TLSFingerprints.WatchFile(ctx, path, interval)
 }
 
+func (app *App) configureUpstreamTLSProfiles() error {
+	if app.Config.UpstreamTLSConfig == "" {
+		return nil
+	}
+	if app.UpstreamTLSProfiles == nil {
+		app.UpstreamTLSProfiles = &UpstreamTLSProfileStore{}
+	}
+	if err := app.UpstreamTLSProfiles.ApplyFile(app.Config.UpstreamTLSConfig); err != nil {
+		return fmt.Errorf("failed loading upstream TLS config: %w", err)
+	}
+	return nil
+}
+
 func (app *App) buildProxy() (*Proxy, error) {
 	dialer, err := NewUpstreamDialer(app.Config.Upstream, time.Second*10)
 	if err != nil {
@@ -189,11 +208,12 @@ func (app *App) configuredTLSFingerprint() TLSFingerprint {
 
 func (app *App) tunnelHandler() *TunnelHandler {
 	return &TunnelHandler{
-		Debug:             app.Config.Debug,
-		CA:                app.CA,
-		SessionKey:        app.SessionKey,
-		TLSFingerprints:   app.TLSFingerprints,
-		DefaultTLSClient:  app.Config.TLSClient,
-		DefaultTLSVersion: app.Config.TLSVersion,
+		Debug:               app.Config.Debug,
+		CA:                  app.CA,
+		SessionKey:          app.SessionKey,
+		TLSFingerprints:     app.TLSFingerprints,
+		UpstreamTLSProfiles: app.UpstreamTLSProfiles,
+		DefaultTLSClient:    app.Config.TLSClient,
+		DefaultTLSVersion:   app.Config.TLSVersion,
 	}
 }

@@ -13,6 +13,7 @@ type RunningConfig struct {
 	TLSVersion        string
 	TLSClient         string
 	FingerprintConfig string
+	UpstreamTLSConfig string
 	Cert              string
 	Key               string
 	Upstream          string

@@ -101,6 +101,8 @@ Usage of ja3proxy:
         utls client version (default "0")
   -fingerprint-config string
         JSON file to hot-reload utls client/version
+  -upstream-tls-config string
+        JSON file with upstream TLS profiles
   -upstream string
         upstream proxy, e.g. 127.0.0.1:1080, socks5 only
   -debug
@@ -119,6 +121,61 @@ Example with a SOCKS5 upstream proxy:
 
 The `-upstream` flag also accepts `host:port`, for example
 `127.0.0.1:1080`. Only SOCKS5 upstream proxies are supported.
+
+### Upstream TLS profile config
+
+Use `-upstream-tls-config` when different upstream hosts need different outbound
+TLS fingerprints. The flag loads a JSON file with a default upstream TLS profile
+and optional host-specific routes:
+
+```json
+{
+  "default": {
+    "protocol": "utls",
+    "client": "Chrome",
+    "version": "120"
+  },
+  "routes": [
+    {
+      "host": "*.gm.example.com",
+      "protocol": "utls",
+      "client": "360Browser",
+      "version": "7.5"
+    },
+    {
+      "host": "api.example.com",
+      "protocol": "utls",
+      "client": "Firefox",
+      "version": "105"
+    }
+  ]
+}
+```
+
+Start the proxy with the profile file:
+
+```bash
+./ja3proxy -port 8080 -upstream-tls-config upstream-tls.json
+```
+
+JA3Proxy uses the `default` profile when no route matches. If `default` is
+omitted, unmatched hosts continue to use the global fingerprint from `-client`,
+`-version`, or `-fingerprint-config`.
+
+Each profile currently supports `protocol: "utls"` with the same `client` and
+`version` values described in [TLS fingerprints](#tls-fingerprints). `tlcp` is
+intentionally not implemented yet, so `tlcp` profiles are not supported in this
+version.
+
+Route `host` values match the upstream destination host. Matching supports exact
+hosts such as `api.example.com` and leading wildcard patterns such as
+`*.example.com`.
+
+This differs from `-fingerprint-config`: `-fingerprint-config` hot-reloads one
+global uTLS `client`/`version` pair for all upstream hosts, while
+`-upstream-tls-config` selects a profile by upstream host from the JSON file.
+The existing `-client`, `-version`, and `-fingerprint-config` flags remain
+backwards-compatible shortcuts for configuring one global uTLS fingerprint.
 
 ### Hot-reload TLS fingerprints
 
@@ -145,7 +202,10 @@ stays active and the error is logged.
 
 ## TLS fingerprints
 
-JA3Proxy passes the `-client` and `-version` values to uTLS. Supported presets
+JA3Proxy resolves global fingerprint settings and upstream TLS profiles to uTLS
+ClientHello presets. With the global shortcut flags, JA3Proxy passes the
+`-client` and `-version` values to uTLS. With `-upstream-tls-config`, each
+matched profile supplies the `client` and `version` values. Supported presets
 depend on the uTLS version used by this project. See the uTLS
 [ClientHelloID definitions](https://github.com/refraction-networking/utls/blob/master/u_common.go)
 for the authoritative list.

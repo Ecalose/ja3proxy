@@ -249,6 +249,159 @@ func TestE2EHTTPSConnectProxyChangesJA3Fingerprint(t *testing.T) {
 	}
 }
 
+func TestE2EHTTPSConnectProxyUsesUpstreamTLSRoute(t *testing.T) {
+	handler := newTestTunnelHandler(t, utls.HelloGolang)
+	profiles := &UpstreamTLSProfileStore{}
+	if err := profiles.SetValidated(UpstreamTLSConfig{
+		Routes: []UpstreamTLSRoute{
+			{
+				Host: "*.test",
+				UpstreamTLSProfile: UpstreamTLSProfile{
+					Protocol: "utls",
+					Client:   utls.HelloFirefox_63.Client,
+					Version:  utls.HelloFirefox_63.Version,
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("configure upstream TLS profiles: %v", err)
+	}
+	handler.UpstreamTLSProfiles = profiles
+
+	const targetHost = "target.test"
+	upstreamAddr, upstreamResults := newJA3CaptureTLSServer(t)
+	_, upstreamPort, err := net.SplitHostPort(upstreamAddr)
+	if err != nil {
+		t.Fatalf("split upstream host: %v", err)
+	}
+	targetAddr := net.JoinHostPort(targetHost, upstreamPort)
+	dialer := &net.Dialer{Timeout: 2 * time.Second}
+
+	proxy := NewProxy(func(network, addr string) (net.Conn, error) {
+		if network != "tcp" {
+			return nil, fmt.Errorf("network = %q, want tcp", network)
+		}
+		if addr != targetAddr {
+			return nil, fmt.Errorf("addr = %q, want %q", addr, targetAddr)
+		}
+		return dialer.Dial(network, upstreamAddr)
+	}, handler.Connect, nil)
+	proxyServer := httptest.NewServer(proxy)
+	t.Cleanup(proxyServer.Close)
+
+	roots := x509.NewCertPool()
+	roots.AddCert(handler.CA.x509Cert)
+	client := newProxyHTTPClient(t, proxyServer.URL, &tls.Config{
+		RootCAs: roots,
+	})
+	resp, err := client.Get("https://" + targetAddr + "/ja3-route")
+	if err != nil {
+		t.Fatalf("proxy HTTPS request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	result := receiveJA3CaptureResult(t, upstreamResults)
+	if result.err != nil {
+		t.Fatalf("upstream TLS server error = %v", result.err)
+	}
+	if result.serverName != targetHost {
+		t.Fatalf("upstream SNI = %q, want %q", result.serverName, targetHost)
+	}
+
+	expectedFirefoxJA3 := expectedUTLSJA3Fingerprint(t, utls.HelloFirefox_63, targetHost, []string{"http/1.1"})
+	expectedGolangJA3 := expectedCryptoTLSJA3Fingerprint(t, targetHost, []string{"http/1.1"})
+	if result.ja3Fingerprint != expectedFirefoxJA3 {
+		t.Fatalf("upstream JA3 = %s (%s), want route Firefox_63 %s", result.ja3Fingerprint, result.ja3, expectedFirefoxJA3)
+	}
+	if result.ja3Fingerprint == expectedGolangJA3 {
+		t.Fatalf("upstream JA3 still matched default Golang fingerprint %s", expectedGolangJA3)
+	}
+}
+
+func TestE2EHTTPSConnectProxyRoutesByDestinationHostNotClientSNI(t *testing.T) {
+	handler := newTestTunnelHandler(t, utls.HelloGolang)
+	profiles := &UpstreamTLSProfileStore{}
+	if err := profiles.SetValidated(UpstreamTLSConfig{
+		Routes: []UpstreamTLSRoute{
+			{
+				Host: "target.test",
+				UpstreamTLSProfile: UpstreamTLSProfile{
+					Protocol: "utls",
+					Client:   utls.HelloFirefox_63.Client,
+					Version:  utls.HelloFirefox_63.Version,
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("configure upstream TLS profiles: %v", err)
+	}
+	handler.UpstreamTLSProfiles = profiles
+
+	const targetHost = "target.test"
+	const clientSNI = "front.test"
+	upstreamAddr, upstreamResults := newJA3CaptureTLSServer(t)
+	_, upstreamPort, err := net.SplitHostPort(upstreamAddr)
+	if err != nil {
+		t.Fatalf("split upstream host: %v", err)
+	}
+	targetAddr := net.JoinHostPort(targetHost, upstreamPort)
+	dialer := &net.Dialer{Timeout: 2 * time.Second}
+
+	proxy := NewProxy(func(network, addr string) (net.Conn, error) {
+		if network != "tcp" {
+			return nil, fmt.Errorf("network = %q, want tcp", network)
+		}
+		if addr != targetAddr {
+			return nil, fmt.Errorf("addr = %q, want %q", addr, targetAddr)
+		}
+		return dialer.Dial(network, upstreamAddr)
+	}, handler.Connect, nil)
+	proxyServer := httptest.NewServer(proxy)
+	t.Cleanup(proxyServer.Close)
+
+	roots := x509.NewCertPool()
+	roots.AddCert(handler.CA.x509Cert)
+	client := newProxyHTTPClient(t, proxyServer.URL, &tls.Config{
+		RootCAs:    roots,
+		ServerName: clientSNI,
+	})
+	resp, err := client.Get("https://" + targetAddr + "/ja3-route-mismatch")
+	if err != nil {
+		t.Fatalf("proxy HTTPS request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	result := receiveJA3CaptureResult(t, upstreamResults)
+	if result.err != nil {
+		t.Fatalf("upstream TLS server error = %v", result.err)
+	}
+	if result.serverName != clientSNI {
+		t.Fatalf("upstream SNI = %q, want %q", result.serverName, clientSNI)
+	}
+	if result.requestURI != "/ja3-route-mismatch" {
+		t.Fatalf("upstream request URI = %q, want /ja3-route-mismatch", result.requestURI)
+	}
+
+	expectedFirefoxJA3 := expectedUTLSJA3Fingerprint(t, utls.HelloFirefox_63, clientSNI, []string{"http/1.1"})
+	expectedGolangJA3 := expectedCryptoTLSJA3Fingerprint(t, clientSNI, []string{"http/1.1"})
+	if result.ja3Fingerprint != expectedFirefoxJA3 {
+		t.Fatalf("upstream JA3 = %s (%s), want route Firefox_63 %s", result.ja3Fingerprint, result.ja3, expectedFirefoxJA3)
+	}
+	if result.ja3Fingerprint == expectedGolangJA3 {
+		t.Fatalf("upstream JA3 still matched default Golang fingerprint %s", expectedGolangJA3)
+	}
+}
+
 func newProxyHTTPClient(t *testing.T, proxyServerURL string, tlsConfig *tls.Config) *http.Client {
 	t.Helper()
 

@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
 	utls "github.com/refraction-networking/utls"
 )
 
@@ -111,14 +111,41 @@ func (s *TLSFingerprintStore) ApplyFile(path string) error {
 		return err
 	}
 
-	slog.Info(
+	logutil.Info(
+		"fingerprint",
 		"loaded TLS fingerprint",
-		"component", "fingerprint",
 		"client", fingerprint.Client,
 		"version", fingerprint.Version,
 		"path", path,
 	)
 	return nil
+}
+
+type tlsFingerprintFileState struct {
+	path    string
+	modTime time.Time
+	size    int64
+}
+
+func newTLSFingerprintFileState(path string) (tlsFingerprintFileState, error) {
+	stat, err := os.Stat(path)
+	if err != nil {
+		return tlsFingerprintFileState{}, err
+	}
+	return tlsFingerprintFileState{
+		path:    path,
+		modTime: stat.ModTime(),
+		size:    stat.Size(),
+	}, nil
+}
+
+func (state tlsFingerprintFileState) changed(stat os.FileInfo) bool {
+	return stat.ModTime().After(state.modTime) || stat.Size() != state.size
+}
+
+func (state *tlsFingerprintFileState) update(stat os.FileInfo) {
+	state.modTime = stat.ModTime()
+	state.size = stat.Size()
 }
 
 func (s *TLSFingerprintStore) WatchFile(ctx context.Context, path string, interval time.Duration) error {
@@ -129,40 +156,42 @@ func (s *TLSFingerprintStore) WatchFile(ctx context.Context, path string, interv
 		return err
 	}
 
-	stat, err := os.Stat(path)
+	state, err := newTLSFingerprintFileState(path)
 	if err != nil {
 		return err
 	}
-	lastModTime := stat.ModTime()
-	lastSize := stat.Size()
 
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				stat, err := os.Stat(path)
-				if err != nil {
-					slog.Error("check TLS fingerprint config failed", "component", "fingerprint", "path", path, "err", err)
-					continue
-				}
-				if !stat.ModTime().After(lastModTime) && stat.Size() == lastSize {
-					continue
-				}
-
-				if err := s.ApplyFile(path); err != nil {
-					slog.Error("reload TLS fingerprint config failed", "component", "fingerprint", "path", path, "err", err)
-					continue
-				}
-				lastModTime = stat.ModTime()
-				lastSize = stat.Size()
-			}
-		}
-	}()
-
+	go s.watchFile(ctx, interval, state)
 	return nil
+}
+
+func (s *TLSFingerprintStore) watchFile(ctx context.Context, interval time.Duration, state tlsFingerprintFileState) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.reloadFileIfChanged(&state)
+		}
+	}
+}
+
+func (s *TLSFingerprintStore) reloadFileIfChanged(state *tlsFingerprintFileState) {
+	stat, err := os.Stat(state.path)
+	if err != nil {
+		logutil.Error("fingerprint", "check TLS fingerprint config failed", "path", state.path, "err", err)
+		return
+	}
+	if !state.changed(stat) {
+		return
+	}
+
+	if err := s.ApplyFile(state.path); err != nil {
+		logutil.Error("fingerprint", "reload TLS fingerprint config failed", "path", state.path, "err", err)
+		return
+	}
+	state.update(stat)
 }

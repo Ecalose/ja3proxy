@@ -14,6 +14,7 @@ import (
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/certstore"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/dialer"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/fingerprint"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
 	httpproxy "github.com/lylemi/ja3proxy/internal/ja3proxy/proxy"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/traffic"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/tui"
@@ -53,7 +54,6 @@ func (app *App) run() error {
 
 func (app *App) runWithContext(ctx context.Context) error {
 	ctx = runtimeContext(ctx)
-
 	if err := app.parseFlags(os.Args[1:]); err != nil {
 		return err
 	}
@@ -61,6 +61,18 @@ func (app *App) runWithContext(ctx context.Context) error {
 		fmt.Print(fingerprint.FormatCatalog())
 		return nil
 	}
+
+	if err := app.configureRuntime(ctx); err != nil {
+		return err
+	}
+	proxyServer, err := app.buildProxy()
+	if err != nil {
+		return err
+	}
+	return app.serveConfiguredProxy(ctx, proxyServer)
+}
+
+func (app *App) configureRuntime(ctx context.Context) error {
 	app.configureLogging()
 	if err := app.ensureCA(); err != nil {
 		return err
@@ -77,24 +89,31 @@ func (app *App) runWithContext(ctx context.Context) error {
 	if err := app.configureUpstreamTLSProfiles(); err != nil {
 		return err
 	}
+	app.ensureTrafficMonitor()
+	return nil
+}
+
+func (app *App) ensureTrafficMonitor() {
 	if app.Config.TUI && app.TrafficMonitor == nil {
 		app.TrafficMonitor = traffic.NewTrafficMonitor()
 	}
+}
 
-	proxyServer, err := app.buildProxy()
-	if err != nil {
-		return err
-	}
+func (app *App) serveConfiguredProxy(ctx context.Context, proxyServer *httpproxy.Proxy) error {
 	if app.Config.TUI {
-		return tui.Run(ctx, tui.Config{
-			ListenAddress: app.Config.listenAddress(),
-			TLSClient:     app.Config.TLSClient,
-			TLSVersion:    app.Config.TLSVersion,
-		}, app.TrafficMonitor, func(runCtx context.Context) error {
-			return app.serve(runCtx, proxyServer)
-		})
+		return app.serveWithTUI(ctx, proxyServer)
 	}
 	return app.serve(ctx, proxyServer)
+}
+
+func (app *App) serveWithTUI(ctx context.Context, proxyServer *httpproxy.Proxy) error {
+	return tui.Run(ctx, tui.Config{
+		ListenAddress: app.Config.listenAddress(),
+		TLSClient:     app.Config.TLSClient,
+		TLSVersion:    app.Config.TLSVersion,
+	}, app.TrafficMonitor, func(runCtx context.Context) error {
+		return app.serve(runCtx, proxyServer)
+	})
 }
 
 func runtimeContext(ctx context.Context) context.Context {
@@ -125,9 +144,9 @@ func (app *App) ensureCA() error {
 			return fmt.Errorf("found CA key %q, but no corresponding cert %q", app.Config.Key, app.Config.Cert)
 		}
 
-		slog.Info(
+		logutil.Info(
+			"runtime",
 			"generating missing CA certificate and key",
-			"component", "runtime",
 			"cert", app.Config.Cert,
 			"key", app.Config.Key,
 		)
@@ -209,9 +228,9 @@ func (app *App) serve(ctx context.Context, proxyServer *httpproxy.Proxy) error {
 	}
 
 	fingerprint := app.configuredTLSFingerprint()
-	slog.Info(
+	logutil.Info(
+		"runtime",
 		"proxy server listening",
-		"component", "runtime",
 		"protocols", "HTTP/SOCKS5",
 		"addr", listenAddress,
 		"tls_client", fingerprint.Client,

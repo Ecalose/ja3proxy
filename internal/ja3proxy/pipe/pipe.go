@@ -3,9 +3,10 @@ package pipe
 import (
 	"errors"
 	"io"
-	"log/slog"
 	"net"
 	"strings"
+
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
 )
 
 func junction(destConn net.Conn, clientConn net.Conn) {
@@ -39,10 +40,10 @@ func copyAndClose(dst io.Writer, src io.Reader, closeConn io.Closer, direction s
 
 	if _, err := io.Copy(dst, src); err != nil {
 		if isExpectedCopyError(err) {
-			slog.Debug("proxy pipe closed", "component", "pipe", "direction", direction, "err", err)
+			logutil.Debug("pipe", "proxy pipe closed", "direction", direction, "err", err)
 			return
 		}
-		slog.Warn("proxy pipe failed", "component", "pipe", "direction", direction, "err", err)
+		logutil.Warn("pipe", "proxy pipe failed", "direction", direction, "err", err)
 	}
 }
 

@@ -3,11 +3,11 @@ package tunnel
 import (
 	"crypto/tls"
 	"fmt"
-	"log/slog"
 	"net"
 
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/certstore"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/fingerprint"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/pipe"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/upstreamtls"
 	utls "github.com/refraction-networking/utls"
@@ -184,7 +184,7 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 	defer clientConn.Close()
 	var destTLSConn *upstreamTLSConn
 	routeHost := sni
-	logger := slog.With("component", "tls_tunnel", "sni", sni)
+	logger := logutil.WithComponent("tls_tunnel", "sni", sni)
 
 	config := &tls.Config{
 		InsecureSkipVerify: true,

@@ -5,11 +5,11 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"strconv"
 	"time"
 
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/netutil"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/pipe"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/traffic"
@@ -38,14 +38,33 @@ type socks5Request struct {
 	port    uint16
 }
 
+type socks5Tunnel struct {
+	request    socks5Request
+	destConn   net.Conn
+	clientConn net.Conn
+	reader     *bufio.Reader
+	info       traffic.TrafficSessionInfo
+}
+
 func (request socks5Request) addr() string {
 	return net.JoinHostPort(request.host, strconv.Itoa(int(request.port)))
+}
+
+func (tunnel socks5Tunnel) target() string {
+	return tunnel.request.addr()
+}
+
+func (tunnel socks5Tunnel) bufferedClientConn() net.Conn {
+	return &bufferedReadConn{
+		Conn:   tunnel.clientConn,
+		reader: tunnel.reader,
+	}
 }
 
 func (p *Proxy) handleSOCKS5(conn net.Conn) {
 	defer conn.Close()
 
-	logger := slog.With("component", "socks5")
+	logger := logutil.WithComponent("socks5")
 	reader := bufio.NewReader(conn)
 	if err := negotiateSOCKS5(conn, reader); err != nil {
 		logger.Warn("negotiation failed", "err", err)
@@ -88,7 +107,13 @@ func (p *Proxy) handleSOCKS5(conn net.Conn) {
 		return
 	}
 
-	p.handleSOCKS5Tunnel(request.host, request.port, destConn, conn, reader, info)
+	p.handleSOCKS5Tunnel(socks5Tunnel{
+		request:    request,
+		destConn:   destConn,
+		clientConn: conn,
+		reader:     reader,
+		info:       info,
+	})
 }
 
 func negotiateSOCKS5(conn net.Conn, reader *bufio.Reader) error {
@@ -188,36 +213,27 @@ func writeSOCKS5Reply(conn net.Conn, status byte) error {
 	return err
 }
 
-func (p *Proxy) handleSOCKS5Tunnel(
-	host string,
-	port uint16,
-	destConn net.Conn,
-	clientConn net.Conn,
-	reader *bufio.Reader,
-	info traffic.TrafficSessionInfo,
-) {
-	logger := slog.With("component", "socks5", "target", net.JoinHostPort(host, strconv.Itoa(int(port))))
-	session := p.monitor().StartSession(info)
+func (p *Proxy) handleSOCKS5Tunnel(tunnel socks5Tunnel) {
+	destConn := tunnel.destConn
+	logger := logutil.WithComponent("socks5", "target", tunnel.target())
+	session := p.monitor().StartSession(tunnel.info)
 	defer session.Finish()
 
-	if port == 443 {
-		tunnelClientConn := &bufferedReadConn{
-			Conn:   clientConn,
-			reader: reader,
-		}
+	if tunnel.request.port == 443 {
+		tunnelClientConn := tunnel.bufferedClientConn()
 		destConn, wrappedClientConn := traffic.WrapTunnel(session, destConn, tunnelClientConn)
-		p.connect(host, destConn, wrappedClientConn)
+		p.connect(tunnel.request.host, destConn, wrappedClientConn)
 		return
 	}
 
-	if err := clientConn.SetReadDeadline(time.Now().Add(socks5TLSPeekTime)); err != nil {
+	if err := tunnel.clientConn.SetReadDeadline(time.Now().Add(socks5TLSPeekTime)); err != nil {
 		destConn.Close()
 		logger.Error("set read deadline failed", "err", err)
 		session.Fail(err)
 		return
 	}
-	first, err := reader.Peek(1)
-	if deadlineErr := clientConn.SetReadDeadline(time.Time{}); deadlineErr != nil {
+	first, err := tunnel.reader.Peek(1)
+	if deadlineErr := tunnel.clientConn.SetReadDeadline(time.Time{}); deadlineErr != nil {
 		destConn.Close()
 		logger.Error("clear read deadline failed", "err", deadlineErr)
 		session.Fail(deadlineErr)
@@ -232,13 +248,10 @@ func (p *Proxy) handleSOCKS5Tunnel(
 		}
 	}
 
-	var tunnelClientConn net.Conn = &bufferedReadConn{
-		Conn:   clientConn,
-		reader: reader,
-	}
+	tunnelClientConn := tunnel.bufferedClientConn()
 	if len(first) > 0 && first[0] == tlsHandshakeRecord {
 		destConn, wrappedClientConn := traffic.WrapTunnel(session, destConn, tunnelClientConn)
-		p.connect(host, destConn, wrappedClientConn)
+		p.connect(tunnel.request.host, destConn, wrappedClientConn)
 		return
 	}
 

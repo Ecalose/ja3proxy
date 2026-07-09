@@ -3,11 +3,11 @@ package proxy
 import (
 	"bufio"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"time"
 
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/netutil"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/pipe"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/traffic"
@@ -104,7 +104,7 @@ func (p *Proxy) TrafficMonitor() *traffic.TrafficMonitor {
 }
 
 func (p *Proxy) handleTunneling(w http.ResponseWriter, r *http.Request) {
-	logger := slog.With("component", "http_connect", "target", r.Host)
+	logger := logutil.WithComponent("http_connect", "target", r.Host)
 	logger.Info("opening tunnel")
 	info := traffic.TrafficSessionInfo{
 		Protocol:   "HTTP CONNECT",
@@ -200,9 +200,9 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		session.Fail(err)
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		slog.Warn(
+		logutil.Warn(
+			"http_proxy",
 			"HTTP upstream request failed",
-			"component", "http_proxy",
 			"method", req.Method,
 			"target", httpRequestTarget(req),
 			"err", err,
@@ -215,9 +215,9 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, req *http.Request) {
 	responseWriter := traffic.WrapResponseWriter(session, w)
 	if _, err := io.Copy(responseWriter, resp.Body); err != nil {
 		session.Fail(err)
-		slog.Warn(
+		logutil.Warn(
+			"http_proxy",
 			"HTTP response copy failed",
-			"component", "http_proxy",
 			"method", req.Method,
 			"target", httpRequestTarget(req),
 			"err", err,

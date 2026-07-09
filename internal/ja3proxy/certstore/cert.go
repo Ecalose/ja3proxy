@@ -38,22 +38,7 @@ func (ca *CertificateAuthority) X509Certificate() *x509.Certificate {
 }
 
 func (ca *CertificateAuthority) Generate(certPath, keyPath string) error {
-	csr := cfsr.CertificateRequest{
-		CN:         "ja3proxy CA",
-		KeyRequest: cfsr.NewKeyRequest(),
-	}
-
-	certPEM, _, keyPEM, err := initca.New(&csr)
-	if err != nil {
-		return err
-	}
-
-	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		return err
-	}
-
-	x509Cert, err := x509.ParseCertificate(tlsCert.Certificate[0])
+	tlsCert, x509Cert, certPEM, keyPEM, err := generateCACertificate()
 	if err != nil {
 		return err
 	}
@@ -61,33 +46,49 @@ func (ca *CertificateAuthority) Generate(certPath, keyPath string) error {
 	ca.tlsCert = tlsCert
 	ca.x509Cert = x509Cert
 
-	if err := ensureParentDir(certPath); err != nil {
+	if err := writePEMFile(certPath, certPEM, 0666); err != nil {
 		return err
 	}
-	caOut, err := os.Create(certPath)
-	if err != nil {
-		return err
-	}
-	defer caOut.Close()
-	_, err = caOut.Write(certPEM)
-	if err != nil {
-		return err
+	return writePEMFile(keyPath, keyPEM, 0600)
+}
+
+func generateCACertificate() (tls.Certificate, *x509.Certificate, []byte, []byte, error) {
+	csr := cfsr.CertificateRequest{
+		CN:         "ja3proxy CA",
+		KeyRequest: cfsr.NewKeyRequest(),
 	}
 
-	if err := ensureParentDir(keyPath); err != nil {
+	certPEM, _, keyPEM, err := initca.New(&csr)
+	if err != nil {
+		return tls.Certificate{}, nil, nil, nil, err
+	}
+
+	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return tls.Certificate{}, nil, nil, nil, err
+	}
+
+	x509Cert, err := x509.ParseCertificate(tlsCert.Certificate[0])
+	if err != nil {
+		return tls.Certificate{}, nil, nil, nil, err
+	}
+
+	return tlsCert, x509Cert, certPEM, keyPEM, nil
+}
+
+func writePEMFile(path string, data []byte, perm os.FileMode) error {
+	if err := ensureParentDir(path); err != nil {
 		return err
 	}
-	keyOut, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	out, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
 	if err != nil {
 		return err
 	}
-	defer keyOut.Close()
-
-	_, err = keyOut.Write(keyPEM)
+	defer out.Close()
+	_, err = out.Write(data)
 	if err != nil {
 		return err
 	}
-
 	return nil
 }
 
@@ -173,15 +174,14 @@ func (ca *CertificateAuthority) Load(certPath, keyPath string) error {
 	tlsCert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
 		return err
-	} else {
-		x509Cert, err := x509.ParseCertificate(tlsCert.Certificate[0])
-		if err != nil {
-			return err
-		}
-
-		ca.tlsCert = tlsCert
-		ca.x509Cert = x509Cert
-
-		return nil
 	}
+	x509Cert, err := x509.ParseCertificate(tlsCert.Certificate[0])
+	if err != nil {
+		return err
+	}
+
+	ca.tlsCert = tlsCert
+	ca.x509Cert = x509Cert
+
+	return nil
 }

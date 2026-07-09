@@ -1,15 +1,15 @@
 package main
 
 import (
-	"log/slog"
 	"os"
 
 	"github.com/lylemi/ja3proxy/internal/ja3proxy"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
 )
 
 func main() {
 	if err := ja3proxy.Run(); err != nil {
-		slog.Error("run failed", "component", "runtime", "err", err)
+		logutil.Error("runtime", "run failed", "err", err)
 		os.Exit(1)
 	}
 }

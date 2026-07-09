@@ -2,9 +2,10 @@ package pipe
 
 import (
 	"encoding/hex"
-	"log/slog"
 	"net"
 	"unicode"
+
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
 )
 
 type DebugWriter struct {
@@ -14,14 +15,14 @@ type DebugWriter struct {
 
 func (writer DebugWriter) Write(data []byte) (n int, err error) {
 	if len(data) == 0 {
-		slog.Debug("proxy data", "component", "debug", "peer", writer.Name, "bytes", 0)
+		logutil.Debug("debug", "proxy data", "peer", writer.Name, "bytes", 0)
 		return writer.Conn.Write(data)
 	}
 
 	if unicode.IsPrint(rune(data[0])) {
-		slog.Debug("proxy data", "component", "debug", "peer", writer.Name, "bytes", len(data), "encoding", "text", "data", string(data))
+		logutil.Debug("debug", "proxy data", "peer", writer.Name, "bytes", len(data), "encoding", "text", "data", string(data))
 	} else {
-		slog.Debug("proxy data", "component", "debug", "peer", writer.Name, "bytes", len(data), "encoding", "hex", "data", hex.Dump(data))
+		logutil.Debug("debug", "proxy data", "peer", writer.Name, "bytes", len(data), "encoding", "hex", "data", hex.Dump(data))
 	}
 
 	return writer.Conn.Write(data)

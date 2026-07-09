@@ -86,26 +86,46 @@ func loadUpstreamTLSConfigFile(path string) (UpstreamTLSConfig, error) {
 }
 
 func validateUpstreamTLSConfig(config UpstreamTLSConfig) error {
-	if !config.Default.isZero() {
-		if err := validateUpstreamTLSProfile(config.Default); err != nil {
-			return fmt.Errorf("default upstream TLS profile: %w", err)
-		}
+	if err := validateDefaultUpstreamTLSProfile(config.Default); err != nil {
+		return err
 	}
-
-	for i, route := range config.Routes {
-		if strings.TrimSpace(route.Host) == "" {
-			return fmt.Errorf("upstream TLS route %d: host is required", i)
-		}
-		if err := validateHostPattern(route.Host); err != nil {
-			return fmt.Errorf("upstream TLS route %q: %w", route.Host, err)
-		}
-		if err := validateUpstreamTLSProfile(route.UpstreamTLSProfile); err != nil {
-			return fmt.Errorf("upstream TLS route %q: %w", route.Host, err)
-		}
+	if err := validateUpstreamTLSRoutes(config.Routes); err != nil {
+		return err
 	}
-
 	if config.Default.isZero() && len(config.Routes) == 0 {
 		return fmt.Errorf("upstream TLS config requires a default profile or at least one route")
+	}
+	return nil
+}
+
+func validateDefaultUpstreamTLSProfile(profile UpstreamTLSProfile) error {
+	if profile.isZero() {
+		return nil
+	}
+	if err := validateUpstreamTLSProfile(profile); err != nil {
+		return fmt.Errorf("default upstream TLS profile: %w", err)
+	}
+	return nil
+}
+
+func validateUpstreamTLSRoutes(routes []UpstreamTLSRoute) error {
+	for i, route := range routes {
+		if err := validateUpstreamTLSRoute(i, route); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateUpstreamTLSRoute(index int, route UpstreamTLSRoute) error {
+	if strings.TrimSpace(route.Host) == "" {
+		return fmt.Errorf("upstream TLS route %d: host is required", index)
+	}
+	if err := validateHostPattern(route.Host); err != nil {
+		return fmt.Errorf("upstream TLS route %q: %w", route.Host, err)
+	}
+	if err := validateUpstreamTLSProfile(route.UpstreamTLSProfile); err != nil {
+		return fmt.Errorf("upstream TLS route %q: %w", route.Host, err)
 	}
 	return nil
 }

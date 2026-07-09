@@ -42,14 +42,14 @@ reload behavior. Run `go test -v ./...` before opening a pull request.
 
 ## Commit & Pull Request Guidelines
 
-Use concise, imperative commit messages. Prefer the existing scoped pattern
-`<scope>: <summary>`, such as `proxy: add upstream TLS profile routes` or
-`socks5: cover request parsing edge cases`. Use `chore(deps): ...` for
-dependency updates. Keep the subject specific, under roughly 72 characters when
-practical, and keep each commit focused on one logical change. Pull requests
-should describe the behavior change, list validation performed, link related
-issues when available, and include logs or curl examples for proxy behavior
-changes.
+Use concise, imperative Conventional Commit messages. Prefer the scoped pattern
+`<type>(<scope>): <summary>`, such as `feat(proxy): add upstream TLS profile
+routes` or `test(socks5): cover request parsing edge cases`. Use
+`chore(deps): ...` for dependency updates. Keep the subject specific, under
+roughly 72 characters when practical, and keep each commit focused on one
+logical change. Pull requests should describe the behavior change, list
+validation performed, link related issues when available, and include logs or
+curl examples for proxy behavior changes.
 
 ## Security & Configuration Tips
 

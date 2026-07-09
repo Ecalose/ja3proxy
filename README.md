@@ -49,7 +49,8 @@ go build -o ja3proxy ./cmd/ja3proxy
 ./ja3proxy --listen :8080 --tls-fingerprint 360Browser@7.5
 ```
 
-The CLI source lives in `cmd/ja3proxy`.
+The command entrypoint lives in `cmd/ja3proxy`; the runtime implementation and
+tests live in `internal/ja3proxy`.
 
 Test the proxy:
 

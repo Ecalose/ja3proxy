@@ -1,4 +1,4 @@
-package main
+package ja3proxy
 
 import (
 	"bytes"

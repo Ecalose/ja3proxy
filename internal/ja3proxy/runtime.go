@@ -1,4 +1,4 @@
-package main
+package ja3proxy
 
 import (
 	"context"
@@ -22,6 +22,11 @@ type App struct {
 	TrafficMonitor      *TrafficMonitor
 
 	watchFingerprintFile func(context.Context, string, time.Duration) error
+}
+
+// Run executes JA3Proxy using the current process arguments.
+func Run() error {
+	return newDefaultApp().run()
 }
 
 func newDefaultApp() *App {

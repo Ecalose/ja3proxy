@@ -4,16 +4,11 @@ import (
 	"log/slog"
 	"os"
 
-	cflog "github.com/cloudflare/cfssl/log"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy"
 )
 
-func init() {
-	cflog.Level = cflog.LevelWarning
-	configureDefaultLogger(slog.LevelInfo)
-}
-
 func main() {
-	if err := newDefaultApp().run(); err != nil {
+	if err := ja3proxy.Run(); err != nil {
 		slog.Error("run failed", "component", "runtime", "err", err)
 		os.Exit(1)
 	}

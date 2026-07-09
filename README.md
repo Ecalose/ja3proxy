@@ -45,7 +45,7 @@ git clone https://github.com/lylemi/ja3proxy.git
 cd ja3proxy
 
 go build -o ja3proxy ./cmd/ja3proxy
-./ja3proxy -port 8080 -client 360Browser -version 7.5
+./ja3proxy -port 8080 -fingerprint 360Browser@7.5
 ```
 
 The CLI source lives in `cmd/ja3proxy`.
@@ -71,8 +71,7 @@ docker run --rm \
   ghcr.io/lylemi/ja3proxy:latest \
   -cert /app/credentials/cert.pem \
   -key /app/credentials/key.pem \
-  -client 360Browser \
-  -version 7.5
+  -fingerprint 360Browser@7.5
 ```
 
 ### Docker Compose
@@ -99,6 +98,10 @@ Usage of ja3proxy:
         utls client (default "Golang")
   -version string
         utls client version (default "0")
+  -fingerprint string
+        utls fingerprint shorthand, e.g. chrome@120
+  -list-fingerprints
+        list supported utls fingerprints and exit
   -fingerprint-config string
         JSON file to hot-reload utls client/version
   -upstream-tls-config string
@@ -114,8 +117,7 @@ Example with a SOCKS5 upstream proxy:
 ```bash
 ./ja3proxy \
   -port 8080 \
-  -client Chrome \
-  -version 106 \
+  -fingerprint chrome@106 \
   -upstream socks5://127.0.0.1:1080
 ```
 
@@ -159,8 +161,8 @@ Start the proxy with the profile file:
 ```
 
 JA3Proxy uses the `default` profile when no route matches. If `default` is
-omitted, unmatched hosts continue to use the global fingerprint from `-client`,
-`-version`, or `-fingerprint-config`.
+omitted, unmatched hosts continue to use the global fingerprint from
+`-fingerprint`, `-client`, `-version`, or `-fingerprint-config`.
 
 Each profile currently supports `protocol: "utls"` with the same `client` and
 `version` values described in [TLS fingerprints](#tls-fingerprints). `tlcp` is
@@ -175,7 +177,7 @@ This differs from `-fingerprint-config`: `-fingerprint-config` hot-reloads one
 global uTLS `client`/`version` pair for all upstream hosts, while
 `-upstream-tls-config` selects a profile by upstream host from the JSON file.
 The existing `-client`, `-version`, and `-fingerprint-config` flags remain
-backwards-compatible shortcuts for configuring one global uTLS fingerprint.
+backwards-compatible ways to configure one global uTLS fingerprint.
 
 ### Hot-reload TLS fingerprints
 
@@ -203,26 +205,46 @@ stays active and the error is logged.
 ## TLS fingerprints
 
 JA3Proxy resolves global fingerprint settings and upstream TLS profiles to uTLS
-ClientHello presets. With the global shortcut flags, JA3Proxy passes the
-`-client` and `-version` values to uTLS. With `-upstream-tls-config`, each
-matched profile supplies the `client` and `version` values. Supported presets
-depend on the uTLS version used by this project. See the uTLS
+ClientHello presets. The easiest global setting is `-fingerprint`:
+
+```bash
+./ja3proxy -fingerprint chrome@120
+./ja3proxy -fingerprint firefox
+```
+
+The `client@version` form selects an exact preset. If the version is omitted,
+JA3Proxy uses the default version from the current uTLS dependency. The legacy
+`-client Chrome -version 120` form still works.
+
+To see the presets supported by the binary you built, run:
+
+```bash
+./ja3proxy -list-fingerprints
+```
+
+Current presets in this module:
+
+| Client | Versions | Default |
+| --- | --- | --- |
+| Golang | 0 | 0 |
+| Chrome | 58, 62, 70, 72, 83, 87, 96, 100, 100_PSK, 102, 106, 112_PSK, 114_PSK, 115_PQ, 115_PQ_PSK, 120, 120_PQ, 131, 133 | 133 |
+| Firefox | 55, 56, 63, 65, 99, 102, 105, 120 | 120 |
+| iOS | 111, 12.1, 13, 14 | 14 |
+| Android | 11 | 11 |
+| Edge | 85, 106 | 85 |
+| Safari | 16.0 | 16.0 |
+| 360Browser | 7.5, 11.0 | 7.5 |
+| QQBrowser | 11.1 | 11.1 |
+
+The `-fingerprint` shorthand is case-insensitive for client names and accepts
+`auto`, `default`, or `latest` as the default version. For iOS, `ios@11.1` is
+accepted as an alias for uTLS's legacy `111` version value.
+
+With `-upstream-tls-config`, each matched profile supplies the same `client`
+and `version` values. Supported presets depend on the uTLS version used by this
+project. See the uTLS
 [ClientHelloID definitions](https://github.com/refraction-networking/utls/blob/master/u_common.go)
-for the authoritative list.
-
-Common presets:
-
-| Client | Version |
-| --- | --- |
-| Golang | 0 |
-| Firefox | 55, 56, 63, 99, 105 |
-| Chrome | 58, 62, 70, 96, 102, 106 |
-| iOS | 12.1, 13, 14 |
-| Android | 11 |
-| Edge | 85, 106 |
-| Safari | 16.0 |
-| 360Browser | 7.5 |
-| QQBrowser | 11.1 |
+for the upstream definitions.
 
 ## Updating uTLS
 

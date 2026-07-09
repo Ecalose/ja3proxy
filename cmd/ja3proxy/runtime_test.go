@@ -139,6 +139,48 @@ func TestParseFlagsReturnsErrorForInvalidFlag(t *testing.T) {
 	}
 }
 
+func TestParseFlagsAppliesFingerprintShorthand(t *testing.T) {
+	app := newRuntimeTestApp(t)
+
+	err := app.parseFlags([]string{"-fingerprint", "chrome@120"})
+	if err != nil {
+		t.Fatalf("parse flags: %v", err)
+	}
+	if app.Config.Fingerprint != "chrome@120" {
+		t.Fatalf("fingerprint = %q, want chrome@120", app.Config.Fingerprint)
+	}
+	if app.Config.TLSClient != "Chrome" {
+		t.Fatalf("client = %q, want Chrome", app.Config.TLSClient)
+	}
+	if app.Config.TLSVersion != "120" {
+		t.Fatalf("version = %q, want 120", app.Config.TLSVersion)
+	}
+}
+
+func TestParseFlagsReturnsErrorForInvalidFingerprintShorthand(t *testing.T) {
+	app := newRuntimeTestApp(t)
+
+	err := app.parseFlags([]string{"-fingerprint", "chrome@999"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "available Chrome versions") {
+		t.Fatalf("error = %q, want available versions", err)
+	}
+}
+
+func TestParseFlagsListFingerprintsSkipsFingerprintParsing(t *testing.T) {
+	app := newRuntimeTestApp(t)
+
+	err := app.parseFlags([]string{"-list-fingerprints", "-fingerprint", "not-a-browser"})
+	if err != nil {
+		t.Fatalf("parse flags: %v", err)
+	}
+	if !app.Config.ListFingerprints {
+		t.Fatal("list fingerprints = false, want true")
+	}
+}
+
 func TestConfigureTLSFingerprintReturnsValidationError(t *testing.T) {
 	app := newRuntimeTestApp(t)
 	app.Config.TLSClient = "UnsupportedClient"

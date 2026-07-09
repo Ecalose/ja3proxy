@@ -68,10 +68,13 @@ func validateTLSFingerprint(fingerprint TLSFingerprint) error {
 		Version: fingerprint.Version,
 	}
 	if clientHelloID.Client == utls.HelloGolang.Client {
+		if clientHelloID.Version != utls.HelloGolang.Version {
+			return unsupportedTLSFingerprintError(fingerprint, nil)
+		}
 		return nil
 	}
 	if _, err := utls.UTLSIdToSpec(clientHelloID); err != nil {
-		return fmt.Errorf("unsupported TLS fingerprint %s %s: %w", fingerprint.Version, fingerprint.Client, err)
+		return unsupportedTLSFingerprintError(fingerprint, err)
 	}
 	return nil
 }

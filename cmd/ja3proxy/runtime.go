@@ -44,6 +44,10 @@ func (app *App) runWithContext(ctx context.Context) error {
 	if err := app.parseFlags(os.Args[1:]); err != nil {
 		return err
 	}
+	if app.Config.ListFingerprints {
+		fmt.Print(formatTLSFingerprintCatalog())
+		return nil
+	}
 	app.configureLogging()
 	if err := app.ensureCA(); err != nil {
 		return err
@@ -83,11 +87,27 @@ func (app *App) parseFlags(args []string) error {
 	flags.StringVar(&app.Config.Port, "port", "8080", "proxy listen port")
 	flags.StringVar(&app.Config.TLSClient, "client", "Golang", "utls client")
 	flags.StringVar(&app.Config.TLSVersion, "version", "0", "utls client version")
+	flags.StringVar(&app.Config.Fingerprint, "fingerprint", "", "utls fingerprint shorthand, e.g. chrome@120")
+	flags.BoolVar(&app.Config.ListFingerprints, "list-fingerprints", false, "list supported utls fingerprints and exit")
 	flags.StringVar(&app.Config.FingerprintConfig, "fingerprint-config", "", "JSON file to hot-reload utls client/version")
 	flags.StringVar(&app.Config.UpstreamTLSConfig, "upstream-tls-config", "", "JSON file with upstream TLS profile routes")
 	flags.StringVar(&app.Config.Upstream, "upstream", "", "upstream proxy, e.g. 127.0.0.1:1080, socks5 only")
 	flags.BoolVar(&app.Config.Debug, "debug", false, "enable debug")
-	return flags.Parse(args)
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if app.Config.ListFingerprints {
+		return nil
+	}
+	if app.Config.Fingerprint != "" {
+		fingerprint, err := parseTLSFingerprintSpec(app.Config.Fingerprint)
+		if err != nil {
+			return err
+		}
+		app.Config.TLSClient = fingerprint.Client
+		app.Config.TLSVersion = fingerprint.Version
+	}
+	return nil
 }
 
 func (app *App) configureLogging() {

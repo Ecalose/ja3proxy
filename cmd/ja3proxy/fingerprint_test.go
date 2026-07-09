@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -45,6 +46,27 @@ func TestSetTLSFingerprintValidatesRequiredFields(t *testing.T) {
 	}
 	if err := store.SetValidated(TLSFingerprint{Client: "NoSuchClient", Version: "999"}); err == nil {
 		t.Fatal("TLSFingerprintStore.SetValidated() error = nil, want unsupported fingerprint error")
+	}
+}
+
+func TestValidateTLSFingerprintReturnsCatalogSuggestions(t *testing.T) {
+	err := validateTLSFingerprint(TLSFingerprint{Client: "Chrome", Version: "999"})
+	if err == nil {
+		t.Fatal("validateTLSFingerprint() error = nil, want unsupported version error")
+	}
+	if !strings.Contains(err.Error(), "available Chrome versions") {
+		t.Fatalf("error = %q, want available Chrome versions", err)
+	}
+	if !strings.Contains(err.Error(), "-list-fingerprints") {
+		t.Fatalf("error = %q, want list fingerprints hint", err)
+	}
+
+	err = validateTLSFingerprint(TLSFingerprint{Client: "Golang", Version: "999"})
+	if err == nil {
+		t.Fatal("validateTLSFingerprint() error = nil, want unsupported Golang version error")
+	}
+	if !strings.Contains(err.Error(), "available Golang versions") {
+		t.Fatalf("error = %q, want available Golang versions", err)
 	}
 }
 

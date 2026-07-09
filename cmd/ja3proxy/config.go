@@ -12,6 +12,8 @@ type RunningConfig struct {
 	Port              string
 	TLSVersion        string
 	TLSClient         string
+	Fingerprint       string
+	ListFingerprints  bool
 	FingerprintConfig string
 	UpstreamTLSConfig string
 	Cert              string

@@ -710,6 +710,55 @@ func TestCopyHeader(t *testing.T) {
 	}
 }
 
+func TestHandleHTTPRecordsTraffic(t *testing.T) {
+	monitor := NewTrafficMonitor()
+	proxy := NewProxy(nil, nil, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		if string(body) != "request" {
+			t.Fatalf("request body = %q, want request", body)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("response")),
+			Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			Request:    req,
+		}, nil
+	})).WithTrafficMonitor(monitor)
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/resource", strings.NewReader("request"))
+	req.RemoteAddr = "127.0.0.1:50000"
+	rec := httptest.NewRecorder()
+
+	proxy.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200", rec.Code)
+	}
+	if rec.Body.String() != "response" {
+		t.Fatalf("response body = %q, want response", rec.Body.String())
+	}
+
+	snapshot := monitor.Snapshot()
+	if snapshot.TotalUploadBytes != int64(len("request")) {
+		t.Fatalf("upload bytes = %d, want %d", snapshot.TotalUploadBytes, len("request"))
+	}
+	if snapshot.TotalDownloadBytes != int64(len("response")) {
+		t.Fatalf("download bytes = %d, want %d", snapshot.TotalDownloadBytes, len("response"))
+	}
+	if len(snapshot.Sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(snapshot.Sessions))
+	}
+	if snapshot.Sessions[0].State != trafficStateClosed {
+		t.Fatalf("session state = %q, want closed", snapshot.Sessions[0].State)
+	}
+	if snapshot.Sessions[0].Target != "example.com" {
+		t.Fatalf("session target = %q, want example.com", snapshot.Sessions[0].Target)
+	}
+}
+
 func TestJunctionForwardsBothDirections(t *testing.T) {
 	destConn, upstreamPeer := net.Pipe()
 	clientConn, clientPeer := net.Pipe()

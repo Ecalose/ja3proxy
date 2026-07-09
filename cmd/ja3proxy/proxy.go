@@ -33,6 +33,7 @@ type Proxy struct {
 	tunnelDial    func(network, addr string) (net.Conn, error)
 	tunnelConnect func(sni string, destConn net.Conn, clientConn net.Conn)
 	httpTransport http.RoundTripper
+	traffic       *TrafficMonitor
 }
 
 func NewProxy(
@@ -54,6 +55,13 @@ func NewProxy(
 		tunnelConnect: connect,
 		httpTransport: transport,
 	}
+}
+
+func (p *Proxy) WithTrafficMonitor(monitor *TrafficMonitor) *Proxy {
+	if p != nil {
+		p.traffic = monitor
+	}
+	return p
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -86,14 +94,28 @@ func (p *Proxy) transport() http.RoundTripper {
 	return http.DefaultTransport
 }
 
+func (p *Proxy) monitor() *TrafficMonitor {
+	if p == nil {
+		return nil
+	}
+	return p.traffic
+}
+
 func (p *Proxy) handleTunneling(w http.ResponseWriter, r *http.Request) {
 	logger := slog.With("component", "http_connect", "target", r.Host)
 	logger.Info("opening tunnel")
+	info := TrafficSessionInfo{
+		Protocol:   "HTTP CONNECT",
+		Target:     r.Host,
+		ClientAddr: r.RemoteAddr,
+		SNI:        stripPort(r.Host),
+	}
 
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
 		logger.Error("hijacking not supported")
+		p.monitor().RecordEvent("error", "hijacking not supported", info, nil)
 		return
 	}
 
@@ -102,6 +124,7 @@ func (p *Proxy) handleTunneling(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		logger.Warn("dial target failed", "err", err)
+		p.monitor().RecordEvent("warn", "dial target failed", info, err)
 		return
 	}
 
@@ -110,7 +133,11 @@ func (p *Proxy) handleTunneling(w http.ResponseWriter, r *http.Request) {
 		destConn.Close()
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		logger.Error("hijack failed", "err", err)
+		p.monitor().RecordEvent("error", "hijack failed", info, err)
 		return
+	}
+	if info.ClientAddr == "" {
+		info.ClientAddr = connRemoteAddr(clientConn)
 	}
 
 	tunnelClientConn := clientConn
@@ -125,16 +152,23 @@ func (p *Proxy) handleTunneling(w http.ResponseWriter, r *http.Request) {
 		destConn.Close()
 		clientConn.Close()
 		logger.Warn("write CONNECT response failed", "err", err)
+		p.monitor().RecordEvent("warn", "write CONNECT response failed", info, err)
 		return
 	}
 	if err := clientRW.Flush(); err != nil {
 		destConn.Close()
 		clientConn.Close()
 		logger.Warn("flush CONNECT response failed", "err", err)
+		p.monitor().RecordEvent("warn", "flush CONNECT response failed", info, err)
 		return
 	}
 
-	go p.connect(stripPort(r.Host), destConn, tunnelClientConn)
+	session := p.monitor().StartSession(info)
+	destConn, tunnelClientConn = wrapTrafficTunnel(session, destConn, tunnelClientConn)
+	go func() {
+		defer session.Finish()
+		p.connect(stripPort(r.Host), destConn, tunnelClientConn)
+	}()
 }
 
 func defaultTunnelDial(network, addr string) (net.Conn, error) {
@@ -146,11 +180,26 @@ func defaultTunnelConnect(_ string, destConn net.Conn, clientConn net.Conn) {
 }
 
 func (p *Proxy) handleHTTP(w http.ResponseWriter, req *http.Request) {
+	info := TrafficSessionInfo{
+		Protocol:   "HTTP",
+		Target:     httpRequestTarget(req),
+		ClientAddr: req.RemoteAddr,
+	}
+	session := p.monitor().StartSession(info)
+	defer session.Finish()
+
 	outReq := req.Clone(req.Context())
 	outReq.RequestURI = ""
+	if outReq.Body != nil {
+		outReq.Body = &trafficReadCloser{
+			ReadCloser: outReq.Body,
+			session:    session,
+		}
+	}
 
 	resp, err := p.transport().RoundTrip(outReq)
 	if err != nil {
+		session.Fail(err)
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		slog.Warn(
 			"HTTP upstream request failed",
@@ -164,7 +213,23 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, req *http.Request) {
 	defer resp.Body.Close()
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	responseWriter := http.ResponseWriter(w)
+	if session != nil {
+		responseWriter = &trafficResponseWriter{
+			ResponseWriter: w,
+			session:        session,
+		}
+	}
+	if _, err := io.Copy(responseWriter, resp.Body); err != nil {
+		session.Fail(err)
+		slog.Warn(
+			"HTTP response copy failed",
+			"component", "http_proxy",
+			"method", req.Method,
+			"target", httpRequestTarget(req),
+			"err", err,
+		)
+	}
 }
 
 func httpRequestTarget(req *http.Request) string {

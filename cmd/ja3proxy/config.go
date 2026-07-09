@@ -20,6 +20,7 @@ type RunningConfig struct {
 	Cert              string
 	Key               string
 	Upstream          string
+	TUI               bool
 }
 
 type CertificateAuthority struct {

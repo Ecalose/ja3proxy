@@ -30,6 +30,7 @@ type cliOptions struct {
 	upstreamProxy       string
 	logLevel            string
 	dumpTraffic         bool
+	tui                 bool
 	listTLSFingerprints bool
 }
 
@@ -75,6 +76,7 @@ func registerCLIFlags(flags *flag.FlagSet, options *cliOptions) {
 
 	flags.StringVar(&options.logLevel, "log-level", defaultLogLevelName, "log level: debug, info, warn, error")
 	flags.BoolVar(&options.dumpTraffic, "dump-traffic", false, "log proxied payload data; sensitive; implies debug logging")
+	flags.BoolVar(&options.tui, "tui", false, "show a live terminal traffic dashboard")
 }
 
 func writeCLIUsage(output io.Writer) {
@@ -100,6 +102,7 @@ Proxy:
 Diagnostics:
   --log-level string              log level: debug, info, warn, error (default "info")
   --dump-traffic                  log proxied payload data; sensitive; implies debug logging
+  --tui                           show a live terminal traffic dashboard
 `)
 }
 
@@ -130,6 +133,7 @@ func applyCLIOptions(config *RunningConfig, options cliOptions, specified map[st
 	config.FingerprintConfig = options.tlsFingerprintFile
 	config.UpstreamTLSConfig = options.tlsProfileFile
 	config.Upstream = options.upstreamProxy
+	config.TUI = options.tui
 
 	if err := applyTLSFingerprintOptions(config, options, specified); err != nil {
 		return err

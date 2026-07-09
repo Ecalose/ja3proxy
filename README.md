@@ -17,6 +17,7 @@ keeping familiar proxy interfaces for clients.
 - Dynamic MITM certificates for HTTPS `CONNECT` traffic.
 - Automatic local CA generation when no certificate/key pair is provided.
 - Optional SOCKS5 upstream proxy for both HTTP and HTTPS traffic.
+- Optional live TUI dashboard for active traffic and recent proxy events.
 - Docker and Docker Compose examples included.
 
 ## How it works
@@ -107,6 +108,7 @@ Proxy:
 Diagnostics:
   --log-level string              log level: debug, info, warn, error (default "info")
   --dump-traffic                  log proxied payload data; sensitive; implies debug logging
+  --tui                           show a live terminal traffic dashboard
 ```
 
 Example with a SOCKS5 upstream proxy:

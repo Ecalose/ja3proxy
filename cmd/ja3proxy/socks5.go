@@ -63,20 +63,28 @@ func (p *Proxy) handleSOCKS5(conn net.Conn) {
 	destAddr := request.addr()
 	logger = logger.With("target", destAddr)
 	logger.Info("opening tunnel")
+	info := TrafficSessionInfo{
+		Protocol:   "SOCKS5",
+		Target:     destAddr,
+		ClientAddr: connRemoteAddr(conn),
+		SNI:        request.host,
+	}
 	destConn, err := p.dial("tcp", destAddr)
 	if err != nil {
 		_ = writeSOCKS5Reply(conn, socks5GeneralFail)
 		logger.Warn("dial target failed", "err", err)
+		p.monitor().RecordEvent("warn", "dial target failed", info, err)
 		return
 	}
 
 	if err := writeSOCKS5Reply(conn, socks5Succeeded); err != nil {
 		destConn.Close()
 		logger.Warn("reply failed", "err", err)
+		p.monitor().RecordEvent("warn", "SOCKS5 reply failed", info, err)
 		return
 	}
 
-	p.handleSOCKS5Tunnel(request.host, request.port, destConn, conn, reader)
+	p.handleSOCKS5Tunnel(request.host, request.port, destConn, conn, reader, info)
 }
 
 func negotiateSOCKS5(conn net.Conn, reader *bufio.Reader) error {
@@ -176,44 +184,61 @@ func writeSOCKS5Reply(conn net.Conn, status byte) error {
 	return err
 }
 
-func (p *Proxy) handleSOCKS5Tunnel(host string, port uint16, destConn net.Conn, clientConn net.Conn, reader *bufio.Reader) {
+func (p *Proxy) handleSOCKS5Tunnel(
+	host string,
+	port uint16,
+	destConn net.Conn,
+	clientConn net.Conn,
+	reader *bufio.Reader,
+	info TrafficSessionInfo,
+) {
 	logger := slog.With("component", "socks5", "target", net.JoinHostPort(host, strconv.Itoa(int(port))))
+	session := p.monitor().StartSession(info)
+	defer session.Finish()
+
 	if port == 443 {
-		p.connect(host, destConn, &bufferedReadConn{
+		tunnelClientConn := &bufferedReadConn{
 			Conn:   clientConn,
 			reader: reader,
-		})
+		}
+		destConn, wrappedClientConn := wrapTrafficTunnel(session, destConn, tunnelClientConn)
+		p.connect(host, destConn, wrappedClientConn)
 		return
 	}
 
 	if err := clientConn.SetReadDeadline(time.Now().Add(socks5TLSPeekTime)); err != nil {
 		destConn.Close()
 		logger.Error("set read deadline failed", "err", err)
+		session.Fail(err)
 		return
 	}
 	first, err := reader.Peek(1)
 	if deadlineErr := clientConn.SetReadDeadline(time.Time{}); deadlineErr != nil {
 		destConn.Close()
 		logger.Error("clear read deadline failed", "err", deadlineErr)
+		session.Fail(deadlineErr)
 		return
 	}
 	if err != nil {
 		if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
 			destConn.Close()
 			logger.Warn("client read failed", "err", err)
+			session.Fail(err)
 			return
 		}
 	}
 
-	tunnelClientConn := &bufferedReadConn{
+	var tunnelClientConn net.Conn = &bufferedReadConn{
 		Conn:   clientConn,
 		reader: reader,
 	}
 	if len(first) > 0 && first[0] == tlsHandshakeRecord {
-		p.connect(host, destConn, tunnelClientConn)
+		destConn, wrappedClientConn := wrapTrafficTunnel(session, destConn, tunnelClientConn)
+		p.connect(host, destConn, wrappedClientConn)
 		return
 	}
 
 	defer destConn.Close()
+	destConn, tunnelClientConn = wrapTrafficTunnel(session, destConn, tunnelClientConn)
 	junction(destConn, tunnelClientConn)
 }

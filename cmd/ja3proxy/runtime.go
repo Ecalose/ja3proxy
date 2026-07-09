@@ -19,6 +19,7 @@ type App struct {
 	SessionKey          *SessionKeyHelper
 	TLSFingerprints     *TLSFingerprintStore
 	UpstreamTLSProfiles *UpstreamTLSProfileStore
+	TrafficMonitor      *TrafficMonitor
 
 	watchFingerprintFile func(context.Context, string, time.Duration) error
 }
@@ -63,10 +64,16 @@ func (app *App) runWithContext(ctx context.Context) error {
 	if err := app.configureUpstreamTLSProfiles(); err != nil {
 		return err
 	}
+	if app.Config.TUI && app.TrafficMonitor == nil {
+		app.TrafficMonitor = NewTrafficMonitor()
+	}
 
 	proxy, err := app.buildProxy()
 	if err != nil {
 		return err
+	}
+	if app.Config.TUI {
+		return app.serveWithTUI(ctx, proxy)
 	}
 	return app.serve(ctx, proxy)
 }
@@ -160,7 +167,11 @@ func (app *App) buildProxy() (*Proxy, error) {
 		return nil, fmt.Errorf("configure upstream proxy: %w", err)
 	}
 
-	return NewProxy(dialer.Dial, app.tunnelHandler().Connect, dialer.Transport), nil
+	proxy := NewProxy(dialer.Dial, app.tunnelHandler().Connect, dialer.Transport)
+	if app.TrafficMonitor != nil {
+		proxy.WithTrafficMonitor(app.TrafficMonitor)
+	}
+	return proxy, nil
 }
 
 func (app *App) serve(ctx context.Context, proxy *Proxy) error {

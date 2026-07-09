@@ -154,6 +154,18 @@ func TestParseFlagsDumpTrafficImpliesDebugLogging(t *testing.T) {
 	}
 }
 
+func TestParseFlagsEnablesTUI(t *testing.T) {
+	app := newRuntimeTestApp(t)
+
+	err := app.parseFlags([]string{"--tui"})
+	if err != nil {
+		t.Fatalf("parse flags: %v", err)
+	}
+	if !app.Config.TUI {
+		t.Fatal("tui = false, want true")
+	}
+}
+
 func TestParseFlagsReturnsErrorForInvalidFlag(t *testing.T) {
 	app := newRuntimeTestApp(t)
 
@@ -310,6 +322,20 @@ func TestBuildProxyReturnsUpstreamValidationError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "configure upstream proxy") {
 		t.Fatalf("error = %q, want upstream context", err)
+	}
+}
+
+func TestBuildProxyAttachesTrafficMonitor(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	monitor := NewTrafficMonitor()
+	app.TrafficMonitor = monitor
+
+	proxy, err := app.buildProxy()
+	if err != nil {
+		t.Fatalf("buildProxy() error = %v", err)
+	}
+	if proxy.monitor() != monitor {
+		t.Fatal("proxy monitor was not attached")
 	}
 }
 

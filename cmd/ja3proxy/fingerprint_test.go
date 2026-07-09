@@ -57,7 +57,7 @@ func TestValidateTLSFingerprintReturnsCatalogSuggestions(t *testing.T) {
 	if !strings.Contains(err.Error(), "available Chrome versions") {
 		t.Fatalf("error = %q, want available Chrome versions", err)
 	}
-	if !strings.Contains(err.Error(), "-list-fingerprints") {
+	if !strings.Contains(err.Error(), "--list-tls-fingerprints") {
 		t.Fatalf("error = %q, want list fingerprints hint", err)
 	}
 

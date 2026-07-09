@@ -5,14 +5,12 @@ services:
     entrypoint:
       [
         "/app/ja3proxy",
-        "-cert",
+        "--ca-cert",
         "/app/credentials/cert.pem",
-        "-key",
+        "--ca-key",
         "/app/credentials/key.pem",
-        "-client",
-        "360Browser",
-        "-version",
-        "7.5"
+        "--tls-fingerprint",
+        "360Browser@7.5"
       ]
     ports:
       - 8080:8080

@@ -45,7 +45,7 @@ git clone https://github.com/lylemi/ja3proxy.git
 cd ja3proxy
 
 go build -o ja3proxy ./cmd/ja3proxy
-./ja3proxy -port 8080 -fingerprint 360Browser@7.5
+./ja3proxy --listen :8080 --tls-fingerprint 360Browser@7.5
 ```
 
 The CLI source lives in `cmd/ja3proxy`.
@@ -69,9 +69,9 @@ docker run --rm \
   -v ./credentials:/app/credentials \
   -p 8080:8080 \
   ghcr.io/lylemi/ja3proxy:latest \
-  -cert /app/credentials/cert.pem \
-  -key /app/credentials/key.pem \
-  -fingerprint 360Browser@7.5
+  --ca-cert /app/credentials/cert.pem \
+  --ca-key /app/credentials/key.pem \
+  --tls-fingerprint 360Browser@7.5
 ```
 
 ### Docker Compose
@@ -85,48 +85,48 @@ See [compose.yaml](./compose.yaml) for the full service definition.
 ## Configuration
 
 ```text
-Usage of ja3proxy:
-  -addr string
-        proxy listen host
-  -port string
-        proxy listen port (default "8080")
-  -cert string
-        proxy CA cert (default "credentials/cert.pem")
-  -key string
-        proxy CA key (default "credentials/key.pem")
-  -client string
-        utls client (default "Golang")
-  -version string
-        utls client version (default "0")
-  -fingerprint string
-        utls fingerprint shorthand, e.g. chrome@120
-  -list-fingerprints
-        list supported utls fingerprints and exit
-  -fingerprint-config string
-        JSON file to hot-reload utls client/version
-  -upstream-tls-config string
-        JSON file with upstream TLS profiles
-  -upstream string
-        upstream proxy, e.g. 127.0.0.1:1080, socks5 only
-  -debug
-        enable debug
+Usage:
+  ja3proxy [options]
+
+Server:
+  --listen string                 listen address, e.g. :8080 or 127.0.0.1:8080 (default ":8080")
+
+CA:
+  --ca-cert string                proxy CA certificate path (default "credentials/cert.pem")
+  --ca-key string                 proxy CA private key path (default "credentials/key.pem")
+
+TLS fingerprint:
+  --tls-fingerprint string        global uTLS fingerprint, e.g. chrome@120
+  --tls-fingerprint-file string   JSON file to hot-reload the global uTLS fingerprint
+  --tls-profile-file string       JSON file with host-routed upstream TLS profiles
+  --list-tls-fingerprints         list supported uTLS fingerprints and exit
+
+Proxy:
+  --upstream-proxy string         upstream SOCKS5 proxy, e.g. socks5://127.0.0.1:1080
+
+Diagnostics:
+  --log-level string              log level: debug, info, warn, error (default "info")
+  --dump-traffic                  log proxied payload data; sensitive; implies debug logging
 ```
 
 Example with a SOCKS5 upstream proxy:
 
 ```bash
 ./ja3proxy \
-  -port 8080 \
-  -fingerprint chrome@106 \
-  -upstream socks5://127.0.0.1:1080
+  --listen :8080 \
+  --tls-fingerprint chrome@106 \
+  --upstream-proxy socks5://127.0.0.1:1080
 ```
 
-The `-upstream` flag also accepts `host:port`, for example
+The `--upstream-proxy` flag also accepts `host:port`, for example
 `127.0.0.1:1080`. Only SOCKS5 upstream proxies are supported.
+
+Global TLS fingerprint sources are mutually exclusive: use one of
+`--tls-fingerprint` or `--tls-fingerprint-file`.
 
 ### Upstream TLS profile config
 
-Use `-upstream-tls-config` when different upstream hosts need different outbound
+Use `--tls-profile-file` when different upstream hosts need different outbound
 TLS fingerprints. The flag loads a JSON file with a default upstream TLS profile
 and optional host-specific routes:
 
@@ -157,12 +157,12 @@ and optional host-specific routes:
 Start the proxy with the profile file:
 
 ```bash
-./ja3proxy -port 8080 -upstream-tls-config upstream-tls.json
+./ja3proxy --listen :8080 --tls-profile-file upstream-tls.json
 ```
 
 JA3Proxy uses the `default` profile when no route matches. If `default` is
 omitted, unmatched hosts continue to use the global fingerprint from
-`-fingerprint`, `-client`, `-version`, or `-fingerprint-config`.
+`--tls-fingerprint` or `--tls-fingerprint-file`.
 
 Each profile currently supports `protocol: "utls"` with the same `client` and
 `version` values described in [TLS fingerprints](#tls-fingerprints). `tlcp` is
@@ -173,15 +173,14 @@ Route `host` values match the upstream destination host. Matching supports exact
 hosts such as `api.example.com` and leading wildcard patterns such as
 `*.example.com`.
 
-This differs from `-fingerprint-config`: `-fingerprint-config` hot-reloads one
-global uTLS `client`/`version` pair for all upstream hosts, while
-`-upstream-tls-config` selects a profile by upstream host from the JSON file.
-The existing `-client`, `-version`, and `-fingerprint-config` flags remain
-backwards-compatible ways to configure one global uTLS fingerprint.
+This differs from `--tls-fingerprint-file`: `--tls-fingerprint-file`
+hot-reloads one global uTLS `client`/`version` pair for all upstream hosts,
+while `--tls-profile-file` selects a profile by upstream host from the JSON
+file.
 
 ### Hot-reload TLS fingerprints
 
-Use `-fingerprint-config` to load the uTLS fingerprint from a JSON file and
+Use `--tls-fingerprint-file` to load the uTLS fingerprint from a JSON file and
 watch it for changes:
 
 ```json
@@ -194,7 +193,7 @@ watch it for changes:
 Start the proxy with the file:
 
 ```bash
-./ja3proxy -port 8080 -fingerprint-config fingerprint.json
+./ja3proxy --listen :8080 --tls-fingerprint-file fingerprint.json
 ```
 
 When the file changes, JA3Proxy validates and reloads it. New HTTPS `CONNECT`
@@ -205,21 +204,20 @@ stays active and the error is logged.
 ## TLS fingerprints
 
 JA3Proxy resolves global fingerprint settings and upstream TLS profiles to uTLS
-ClientHello presets. The easiest global setting is `-fingerprint`:
+ClientHello presets. The easiest global setting is `--tls-fingerprint`:
 
 ```bash
-./ja3proxy -fingerprint chrome@120
-./ja3proxy -fingerprint firefox
+./ja3proxy --tls-fingerprint chrome@120
+./ja3proxy --tls-fingerprint firefox
 ```
 
 The `client@version` form selects an exact preset. If the version is omitted,
-JA3Proxy uses the default version from the current uTLS dependency. The legacy
-`-client Chrome -version 120` form still works.
+JA3Proxy uses the default version from the current uTLS dependency.
 
 To see the presets supported by the binary you built, run:
 
 ```bash
-./ja3proxy -list-fingerprints
+./ja3proxy --list-tls-fingerprints
 ```
 
 Current presets in this module:
@@ -236,11 +234,11 @@ Current presets in this module:
 | 360Browser | 7.5, 11.0 | 7.5 |
 | QQBrowser | 11.1 | 11.1 |
 
-The `-fingerprint` shorthand is case-insensitive for client names and accepts
-`auto`, `default`, or `latest` as the default version. For iOS, `ios@11.1` is
-accepted as an alias for uTLS's legacy `111` version value.
+The `--tls-fingerprint` shorthand is case-insensitive for client names and
+accepts `auto`, `default`, or `latest` as the default version. For iOS,
+`ios@11.1` is accepted as an alias for uTLS's `111` version value.
 
-With `-upstream-tls-config`, each matched profile supplies the same `client`
+With `--tls-profile-file`, each matched profile supplies the same `client`
 and `version` values. Supported presets depend on the uTLS version used by this
 project. See the uTLS
 [ClientHelloID definitions](https://github.com/refraction-networking/utls/blob/master/u_common.go)
@@ -266,7 +264,7 @@ go test ./...
 JA3Proxy needs a CA certificate and private key to generate per-host
 certificates for HTTPS interception.
 
-- If both files exist, they are loaded from `-cert` and `-key`.
+- If both files exist, they are loaded from `--ca-cert` and `--ca-key`.
 - If neither file exists, JA3Proxy generates a new CA pair.
 - If only one file exists, startup fails to avoid using a mismatched pair.
 

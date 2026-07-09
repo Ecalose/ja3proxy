@@ -100,7 +100,7 @@ func TestParseTLSFingerprintSpecRejectsInvalidInput(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("parseTLSFingerprintSpec(%q) error = %v, want %q", tt.spec, err, tt.want)
 			}
-			if tt.want != "fingerprint version is required" && !strings.Contains(err.Error(), "-list-fingerprints") {
+			if tt.want != "fingerprint version is required" && !strings.Contains(err.Error(), "--list-tls-fingerprints") {
 				t.Fatalf("parseTLSFingerprintSpec(%q) error = %v, want list hint", tt.spec, err)
 			}
 		})
@@ -124,8 +124,8 @@ func TestFormatTLSFingerprintCatalog(t *testing.T) {
 		"Available TLS fingerprints:",
 		"Chrome:",
 		utls.HelloChrome_Auto.Version,
-		"ja3proxy -fingerprint chrome@120",
-		"ja3proxy -fingerprint firefox",
+		"ja3proxy --tls-fingerprint chrome@120",
+		"ja3proxy --tls-fingerprint firefox",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("formatTLSFingerprintCatalog() missing %q in:\n%s", want, got)

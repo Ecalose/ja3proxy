@@ -212,9 +212,9 @@ func formatTLSFingerprintCatalog() string {
 		builder.WriteString(preset.DefaultVersion)
 		builder.WriteString(")\n")
 	}
-	builder.WriteString("\nUse -fingerprint client@version, for example:\n")
-	builder.WriteString("  ja3proxy -fingerprint chrome@120\n")
-	builder.WriteString("  ja3proxy -fingerprint firefox\n")
+	builder.WriteString("\nUse --tls-fingerprint client@version, for example:\n")
+	builder.WriteString("  ja3proxy --tls-fingerprint chrome@120\n")
+	builder.WriteString("  ja3proxy --tls-fingerprint firefox\n")
 	return builder.String()
 }
 
@@ -230,7 +230,7 @@ func unsupportedTLSFingerprintError(fingerprint TLSFingerprint, cause error) err
 	if preset, ok := lookupTLSFingerprintPreset(fingerprint.Client); ok {
 		if fingerprint.Client != preset.Client {
 			return fmt.Errorf(
-				"unsupported TLS fingerprint client %q; did you mean %q?\navailable clients: %s\nrun with -list-fingerprints to see all presets",
+				"unsupported TLS fingerprint client %q; did you mean %q?\navailable clients: %s\nrun with --list-tls-fingerprints to see all presets",
 				fingerprint.Client,
 				preset.Client,
 				availableTLSFingerprintClients(),
@@ -240,7 +240,7 @@ func unsupportedTLSFingerprintError(fingerprint TLSFingerprint, cause error) err
 	}
 	if cause != nil {
 		return fmt.Errorf(
-			"unsupported TLS fingerprint %s %s: %w\navailable clients: %s\nrun with -list-fingerprints to see all presets",
+			"unsupported TLS fingerprint %s %s: %w\navailable clients: %s\nrun with --list-tls-fingerprints to see all presets",
 			fingerprint.Version,
 			fingerprint.Client,
 			cause,
@@ -252,7 +252,7 @@ func unsupportedTLSFingerprintError(fingerprint TLSFingerprint, cause error) err
 
 func unsupportedTLSFingerprintClientError(client string) error {
 	return fmt.Errorf(
-		"unsupported TLS fingerprint client %q\navailable clients: %s\nrun with -list-fingerprints to see all presets",
+		"unsupported TLS fingerprint client %q\navailable clients: %s\nrun with --list-tls-fingerprints to see all presets",
 		client,
 		availableTLSFingerprintClients(),
 	)
@@ -260,7 +260,7 @@ func unsupportedTLSFingerprintClientError(client string) error {
 
 func unsupportedTLSFingerprintVersionError(preset tlsFingerprintPreset, version string) error {
 	return fmt.Errorf(
-		"unsupported TLS fingerprint %s %s\navailable %s versions: %s\nrun with -list-fingerprints to see all presets",
+		"unsupported TLS fingerprint %s %s\navailable %s versions: %s\nrun with --list-tls-fingerprints to see all presets",
 		version,
 		preset.Client,
 		preset.Client,

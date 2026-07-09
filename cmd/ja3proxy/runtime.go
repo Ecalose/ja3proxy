@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net"
@@ -79,41 +78,13 @@ func runtimeContext(ctx context.Context) context.Context {
 	return ctx
 }
 
-func (app *App) parseFlags(args []string) error {
-	flags := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
-	flags.StringVar(&app.Config.Cert, "cert", "credentials/cert.pem", "proxy CA cert")
-	flags.StringVar(&app.Config.Key, "key", "credentials/key.pem", "proxy CA key")
-	flags.StringVar(&app.Config.Addr, "addr", "", "proxy listen host")
-	flags.StringVar(&app.Config.Port, "port", "8080", "proxy listen port")
-	flags.StringVar(&app.Config.TLSClient, "client", "Golang", "utls client")
-	flags.StringVar(&app.Config.TLSVersion, "version", "0", "utls client version")
-	flags.StringVar(&app.Config.Fingerprint, "fingerprint", "", "utls fingerprint shorthand, e.g. chrome@120")
-	flags.BoolVar(&app.Config.ListFingerprints, "list-fingerprints", false, "list supported utls fingerprints and exit")
-	flags.StringVar(&app.Config.FingerprintConfig, "fingerprint-config", "", "JSON file to hot-reload utls client/version")
-	flags.StringVar(&app.Config.UpstreamTLSConfig, "upstream-tls-config", "", "JSON file with upstream TLS profile routes")
-	flags.StringVar(&app.Config.Upstream, "upstream", "", "upstream proxy, e.g. 127.0.0.1:1080, socks5 only")
-	flags.BoolVar(&app.Config.Debug, "debug", false, "enable debug")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	if app.Config.ListFingerprints {
-		return nil
-	}
-	if app.Config.Fingerprint != "" {
-		fingerprint, err := parseTLSFingerprintSpec(app.Config.Fingerprint)
-		if err != nil {
-			return err
-		}
-		app.Config.TLSClient = fingerprint.Client
-		app.Config.TLSVersion = fingerprint.Version
-	}
-	return nil
-}
-
 func (app *App) configureLogging() {
-	level := slog.LevelInfo
-	if app.Config.Debug {
+	level := logLevelFromName(app.Config.LogLevel)
+	if app.Config.dumpTrafficEnabled() && level > slog.LevelDebug {
 		level = slog.LevelDebug
+	}
+	cflog.Level = cflog.LevelWarning
+	if level <= slog.LevelDebug {
 		cflog.Level = cflog.LevelDebug
 	}
 
@@ -198,9 +169,10 @@ func (app *App) serve(ctx context.Context, proxy *Proxy) error {
 		return err
 	}
 
-	listener, err := net.Listen("tcp", app.Config.Addr+":"+app.Config.Port)
+	listenAddress := app.Config.listenAddress()
+	listener, err := net.Listen("tcp", listenAddress)
 	if err != nil {
-		return fmt.Errorf("listen on %s:%s: %w", app.Config.Addr, app.Config.Port, err)
+		return fmt.Errorf("listen on %s: %w", listenAddress, err)
 	}
 	server := &http.Server{
 		Handler: proxy,
@@ -211,7 +183,7 @@ func (app *App) serve(ctx context.Context, proxy *Proxy) error {
 		"proxy server listening",
 		"component", "runtime",
 		"protocols", "HTTP/SOCKS5",
-		"addr", net.JoinHostPort(app.Config.Addr, app.Config.Port),
+		"addr", listenAddress,
 		"tls_client", fingerprint.Client,
 		"tls_version", fingerprint.Version,
 	)
@@ -242,7 +214,7 @@ func (app *App) configuredTLSFingerprint() TLSFingerprint {
 
 func (app *App) tunnelHandler() *TunnelHandler {
 	return &TunnelHandler{
-		Debug:               app.Config.Debug,
+		Debug:               app.Config.dumpTrafficEnabled(),
 		CA:                  app.CA,
 		SessionKey:          app.SessionKey,
 		TLSFingerprints:     app.TLSFingerprints,

@@ -7,12 +7,13 @@ import (
 )
 
 type RunningConfig struct {
-	Debug             bool
+	DumpTraffic       bool
+	LogLevel          string
+	Listen            string
 	Addr              string
 	Port              string
 	TLSVersion        string
 	TLSClient         string
-	Fingerprint       string
 	ListFingerprints  bool
 	FingerprintConfig string
 	UpstreamTLSConfig string

@@ -70,20 +70,17 @@ func TestEnsureCAReturnsErrorWhenOnlyKeyExists(t *testing.T) {
 	}
 }
 
-func TestParseFlagsAppliesArgs(t *testing.T) {
+func TestParseFlagsAppliesNormalizedArgs(t *testing.T) {
 	app := newRuntimeTestApp(t)
 
 	err := app.parseFlags([]string{
-		"-cert", "custom-cert.pem",
-		"-key", "custom-key.pem",
-		"-addr", "127.0.0.1",
-		"-port", "9090",
-		"-client", "Chrome",
-		"-version", "120",
-		"-fingerprint-config", "fingerprints.json",
-		"-upstream-tls-config", "upstream-tls.json",
-		"-upstream", "127.0.0.1:1080",
-		"-debug",
+		"--ca-cert", "custom-cert.pem",
+		"--ca-key", "custom-key.pem",
+		"--listen", "127.0.0.1:9090",
+		"--tls-fingerprint", "chrome@120",
+		"--tls-profile-file", "upstream-tls.json",
+		"--upstream-proxy", "socks5://127.0.0.1:1080",
+		"--log-level", "warn",
 	})
 	if err != nil {
 		t.Fatalf("parse flags: %v", err)
@@ -94,6 +91,9 @@ func TestParseFlagsAppliesArgs(t *testing.T) {
 	}
 	if app.Config.Key != "custom-key.pem" {
 		t.Fatalf("key = %q, want custom-key.pem", app.Config.Key)
+	}
+	if app.Config.Listen != "127.0.0.1:9090" {
+		t.Fatalf("listen = %q, want 127.0.0.1:9090", app.Config.Listen)
 	}
 	if app.Config.Addr != "127.0.0.1" {
 		t.Fatalf("addr = %q, want 127.0.0.1", app.Config.Addr)
@@ -107,20 +107,50 @@ func TestParseFlagsAppliesArgs(t *testing.T) {
 	if app.Config.TLSVersion != "120" {
 		t.Fatalf("version = %q, want 120", app.Config.TLSVersion)
 	}
-	if app.Config.FingerprintConfig != "fingerprints.json" {
-		t.Fatalf("fingerprint config = %q, want fingerprints.json", app.Config.FingerprintConfig)
+	if app.Config.FingerprintConfig != "" {
+		t.Fatalf("fingerprint config = %q, want empty", app.Config.FingerprintConfig)
 	}
 	if app.Config.UpstreamTLSConfig != "upstream-tls.json" {
 		t.Fatalf("upstream TLS config = %q, want upstream-tls.json", app.Config.UpstreamTLSConfig)
 	}
-	if app.Config.Upstream != "127.0.0.1:1080" {
-		t.Fatalf("upstream = %q, want 127.0.0.1:1080", app.Config.Upstream)
+	if app.Config.Upstream != "socks5://127.0.0.1:1080" {
+		t.Fatalf("upstream = %q, want socks5://127.0.0.1:1080", app.Config.Upstream)
 	}
-	if !app.Config.Debug {
-		t.Fatal("debug = false, want true")
+	if app.Config.LogLevel != "warn" {
+		t.Fatalf("log level = %q, want warn", app.Config.LogLevel)
+	}
+	if app.Config.DumpTraffic {
+		t.Fatal("dump traffic = true, want false")
 	}
 	if flag.CommandLine.Lookup("cert") != nil {
 		t.Fatal("parseFlags registered cert on global flag.CommandLine")
+	}
+}
+
+func TestParseFlagsAppliesTLSFingerprintFile(t *testing.T) {
+	app := newRuntimeTestApp(t)
+
+	err := app.parseFlags([]string{"--tls-fingerprint-file", "fingerprints.json"})
+	if err != nil {
+		t.Fatalf("parse flags: %v", err)
+	}
+	if app.Config.FingerprintConfig != "fingerprints.json" {
+		t.Fatalf("fingerprint config = %q, want fingerprints.json", app.Config.FingerprintConfig)
+	}
+}
+
+func TestParseFlagsDumpTrafficImpliesDebugLogging(t *testing.T) {
+	app := newRuntimeTestApp(t)
+
+	err := app.parseFlags([]string{"--dump-traffic"})
+	if err != nil {
+		t.Fatalf("parse flags: %v", err)
+	}
+	if !app.Config.DumpTraffic {
+		t.Fatal("dump traffic = false, want true")
+	}
+	if app.Config.LogLevel != "debug" {
+		t.Fatalf("log level = %q, want debug", app.Config.LogLevel)
 	}
 }
 
@@ -142,12 +172,9 @@ func TestParseFlagsReturnsErrorForInvalidFlag(t *testing.T) {
 func TestParseFlagsAppliesFingerprintShorthand(t *testing.T) {
 	app := newRuntimeTestApp(t)
 
-	err := app.parseFlags([]string{"-fingerprint", "chrome@120"})
+	err := app.parseFlags([]string{"--tls-fingerprint", "chrome@120"})
 	if err != nil {
 		t.Fatalf("parse flags: %v", err)
-	}
-	if app.Config.Fingerprint != "chrome@120" {
-		t.Fatalf("fingerprint = %q, want chrome@120", app.Config.Fingerprint)
 	}
 	if app.Config.TLSClient != "Chrome" {
 		t.Fatalf("client = %q, want Chrome", app.Config.TLSClient)
@@ -160,7 +187,7 @@ func TestParseFlagsAppliesFingerprintShorthand(t *testing.T) {
 func TestParseFlagsReturnsErrorForInvalidFingerprintShorthand(t *testing.T) {
 	app := newRuntimeTestApp(t)
 
-	err := app.parseFlags([]string{"-fingerprint", "chrome@999"})
+	err := app.parseFlags([]string{"--tls-fingerprint", "chrome@999"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -169,10 +196,34 @@ func TestParseFlagsReturnsErrorForInvalidFingerprintShorthand(t *testing.T) {
 	}
 }
 
+func TestParseFlagsRejectsRemovedFlag(t *testing.T) {
+	app := newRuntimeTestApp(t)
+
+	err := app.parseFlags([]string{"-port", "9090"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "flag provided but not defined") {
+		t.Fatalf("error = %q, want unknown flag context", err)
+	}
+}
+
+func TestParseFlagsRejectsFingerprintFileWithGlobalFingerprint(t *testing.T) {
+	app := newRuntimeTestApp(t)
+
+	err := app.parseFlags([]string{"--tls-fingerprint-file", "fingerprints.json", "--tls-fingerprint", "chrome@120"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "--tls-fingerprint-file") {
+		t.Fatalf("error = %q, want fingerprint file conflict context", err)
+	}
+}
+
 func TestParseFlagsListFingerprintsSkipsFingerprintParsing(t *testing.T) {
 	app := newRuntimeTestApp(t)
 
-	err := app.parseFlags([]string{"-list-fingerprints", "-fingerprint", "not-a-browser"})
+	err := app.parseFlags([]string{"--list-tls-fingerprints", "--tls-fingerprint", "not-a-browser"})
 	if err != nil {
 		t.Fatalf("parse flags: %v", err)
 	}

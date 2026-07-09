@@ -22,7 +22,7 @@ Static branding assets live in `assets/`.
 Run locally with, for example:
 
 ```bash
-./ja3proxy -port 8080 -client Chrome -version 106
+./ja3proxy --listen :8080 --tls-fingerprint Chrome@106
 ```
 
 ## Coding Style & Naming Conventions

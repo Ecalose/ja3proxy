@@ -11,15 +11,23 @@ import (
 	"time"
 
 	cflog "github.com/cloudflare/cfssl/log"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/certstore"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/dialer"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/fingerprint"
+	httpproxy "github.com/lylemi/ja3proxy/internal/ja3proxy/proxy"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/traffic"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/tui"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/tunnel"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/upstreamtls"
 )
 
 type App struct {
 	Config              *RunningConfig
-	CA                  *CertificateAuthority
-	SessionKey          *SessionKeyHelper
-	TLSFingerprints     *TLSFingerprintStore
-	UpstreamTLSProfiles *UpstreamTLSProfileStore
-	TrafficMonitor      *TrafficMonitor
+	CA                  *certstore.CertificateAuthority
+	SessionKey          *certstore.SessionKeyHelper
+	TLSFingerprints     *fingerprint.TLSFingerprintStore
+	UpstreamTLSProfiles *upstreamtls.UpstreamTLSProfileStore
+	TrafficMonitor      *traffic.TrafficMonitor
 
 	watchFingerprintFile func(context.Context, string, time.Duration) error
 }
@@ -32,10 +40,10 @@ func Run() error {
 func newDefaultApp() *App {
 	return &App{
 		Config:              &RunningConfig{},
-		CA:                  &CertificateAuthority{},
-		SessionKey:          &SessionKeyHelper{},
-		TLSFingerprints:     &TLSFingerprintStore{},
-		UpstreamTLSProfiles: &UpstreamTLSProfileStore{},
+		CA:                  &certstore.CertificateAuthority{},
+		SessionKey:          &certstore.SessionKeyHelper{},
+		TLSFingerprints:     &fingerprint.TLSFingerprintStore{},
+		UpstreamTLSProfiles: &upstreamtls.UpstreamTLSProfileStore{},
 	}
 }
 
@@ -50,7 +58,7 @@ func (app *App) runWithContext(ctx context.Context) error {
 		return err
 	}
 	if app.Config.ListFingerprints {
-		fmt.Print(formatTLSFingerprintCatalog())
+		fmt.Print(fingerprint.FormatCatalog())
 		return nil
 	}
 	app.configureLogging()
@@ -70,17 +78,23 @@ func (app *App) runWithContext(ctx context.Context) error {
 		return err
 	}
 	if app.Config.TUI && app.TrafficMonitor == nil {
-		app.TrafficMonitor = NewTrafficMonitor()
+		app.TrafficMonitor = traffic.NewTrafficMonitor()
 	}
 
-	proxy, err := app.buildProxy()
+	proxyServer, err := app.buildProxy()
 	if err != nil {
 		return err
 	}
 	if app.Config.TUI {
-		return app.serveWithTUI(ctx, proxy)
+		return tui.Run(ctx, tui.Config{
+			ListenAddress: app.Config.listenAddress(),
+			TLSClient:     app.Config.TLSClient,
+			TLSVersion:    app.Config.TLSVersion,
+		}, app.TrafficMonitor, func(runCtx context.Context) error {
+			return app.serve(runCtx, proxyServer)
+		})
 	}
-	return app.serve(ctx, proxy)
+	return app.serve(ctx, proxyServer)
 }
 
 func runtimeContext(ctx context.Context) context.Context {
@@ -137,7 +151,7 @@ func (app *App) configureTLSFingerprint(ctx context.Context) error {
 		if err := app.watchTLSFingerprintFile(runtimeContext(ctx), app.Config.FingerprintConfig, 2*time.Second); err != nil {
 			return fmt.Errorf("failed loading fingerprint config: %w", err)
 		}
-	} else if err := app.TLSFingerprints.SetValidated(TLSFingerprint{
+	} else if err := app.TLSFingerprints.SetValidated(fingerprint.TLSFingerprint{
 		Client:  app.Config.TLSClient,
 		Version: app.Config.TLSVersion,
 	}); err != nil {
@@ -158,7 +172,7 @@ func (app *App) configureUpstreamTLSProfiles() error {
 		return nil
 	}
 	if app.UpstreamTLSProfiles == nil {
-		app.UpstreamTLSProfiles = &UpstreamTLSProfileStore{}
+		app.UpstreamTLSProfiles = &upstreamtls.UpstreamTLSProfileStore{}
 	}
 	if err := app.UpstreamTLSProfiles.ApplyFile(app.Config.UpstreamTLSConfig); err != nil {
 		return fmt.Errorf("failed loading upstream TLS config: %w", err)
@@ -166,20 +180,20 @@ func (app *App) configureUpstreamTLSProfiles() error {
 	return nil
 }
 
-func (app *App) buildProxy() (*Proxy, error) {
-	dialer, err := NewUpstreamDialer(app.Config.Upstream, time.Second*10)
+func (app *App) buildProxy() (*httpproxy.Proxy, error) {
+	upstreamDialer, err := dialer.NewUpstreamDialer(app.Config.Upstream, time.Second*10)
 	if err != nil {
 		return nil, fmt.Errorf("configure upstream proxy: %w", err)
 	}
 
-	proxy := NewProxy(dialer.Dial, app.tunnelHandler().Connect, dialer.Transport)
+	proxyServer := httpproxy.NewProxy(upstreamDialer.Dial, app.tunnelHandler().Connect, upstreamDialer.Transport)
 	if app.TrafficMonitor != nil {
-		proxy.WithTrafficMonitor(app.TrafficMonitor)
+		proxyServer.WithTrafficMonitor(app.TrafficMonitor)
 	}
-	return proxy, nil
+	return proxyServer, nil
 }
 
-func (app *App) serve(ctx context.Context, proxy *Proxy) error {
+func (app *App) serve(ctx context.Context, proxyServer *httpproxy.Proxy) error {
 	ctx = runtimeContext(ctx)
 	if err := ctx.Err(); err != nil {
 		return err
@@ -191,7 +205,7 @@ func (app *App) serve(ctx context.Context, proxy *Proxy) error {
 		return fmt.Errorf("listen on %s: %w", listenAddress, err)
 	}
 	server := &http.Server{
-		Handler: proxy,
+		Handler: proxyServer,
 	}
 
 	fingerprint := app.configuredTLSFingerprint()
@@ -208,7 +222,7 @@ func (app *App) serve(ctx context.Context, proxy *Proxy) error {
 	})
 	defer stopClosingServer()
 
-	if err := server.Serve(newMixedProxyListener(listener, proxy)); err != nil {
+	if err := server.Serve(httpproxy.NewMixedProxyListener(listener, proxyServer)); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil && (errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed)) {
 			return ctxErr
 		}
@@ -217,19 +231,21 @@ func (app *App) serve(ctx context.Context, proxy *Proxy) error {
 	return nil
 }
 
-func (app *App) configuredTLSFingerprint() TLSFingerprint {
-	if fingerprint, ok := app.TLSFingerprints.Get(); ok {
-		return fingerprint
+func (app *App) configuredTLSFingerprint() fingerprint.TLSFingerprint {
+	if app.TLSFingerprints != nil {
+		if fp, ok := app.TLSFingerprints.Get(); ok {
+			return fp
+		}
 	}
 
-	return TLSFingerprint{
+	return fingerprint.TLSFingerprint{
 		Client:  app.Config.TLSClient,
 		Version: app.Config.TLSVersion,
 	}
 }
 
-func (app *App) tunnelHandler() *TunnelHandler {
-	return &TunnelHandler{
+func (app *App) tunnelHandler() *tunnel.TunnelHandler {
+	return &tunnel.TunnelHandler{
 		Debug:               app.Config.dumpTrafficEnabled(),
 		CA:                  app.CA,
 		SessionKey:          app.SessionKey,

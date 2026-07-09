@@ -9,6 +9,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/certstore"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/fingerprint"
+	httpproxy "github.com/lylemi/ja3proxy/internal/ja3proxy/proxy"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/traffic"
 )
 
 func newRuntimeTestApp(t *testing.T) *App {
@@ -20,9 +25,9 @@ func newRuntimeTestApp(t *testing.T) *App {
 		TLSClient:  "Golang",
 		TLSVersion: "0",
 	}
-	ca := &CertificateAuthority{}
-	sessionKey := &SessionKeyHelper{}
-	fingerprints := &TLSFingerprintStore{}
+	ca := &certstore.CertificateAuthority{}
+	sessionKey := &certstore.SessionKeyHelper{}
+	fingerprints := &fingerprint.TLSFingerprintStore{}
 
 	return &App{
 		Config:          config,
@@ -258,6 +263,32 @@ func TestConfigureTLSFingerprintReturnsValidationError(t *testing.T) {
 	}
 }
 
+func TestConfiguredTLSFingerprintFallsBackToConfig(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	app.Config.TLSClient = "Chrome"
+	app.Config.TLSVersion = "106"
+
+	got := app.configuredTLSFingerprint()
+	if got.Client != "Chrome" || got.Version != "106" {
+		t.Fatalf("App.configuredTLSFingerprint() = %+v, want Chrome 106", got)
+	}
+}
+
+func TestSetTLSFingerprintOverridesConfig(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	app.Config.TLSClient = "Golang"
+	app.Config.TLSVersion = "0"
+
+	if err := app.TLSFingerprints.SetValidated(fingerprint.TLSFingerprint{Client: "Firefox", Version: "105"}); err != nil {
+		t.Fatalf("TLSFingerprintStore.SetValidated() error = %v", err)
+	}
+
+	got := app.configuredTLSFingerprint()
+	if got.Client != "Firefox" || got.Version != "105" {
+		t.Fatalf("App.configuredTLSFingerprint() = %+v, want Firefox 105", got)
+	}
+}
+
 func TestConfigureTLSFingerprintReturnsFileError(t *testing.T) {
 	app := newRuntimeTestApp(t)
 	app.Config.FingerprintConfig = filepath.Join(t.TempDir(), "missing.json")
@@ -327,14 +358,14 @@ func TestBuildProxyReturnsUpstreamValidationError(t *testing.T) {
 
 func TestBuildProxyAttachesTrafficMonitor(t *testing.T) {
 	app := newRuntimeTestApp(t)
-	monitor := NewTrafficMonitor()
+	monitor := traffic.NewTrafficMonitor()
 	app.TrafficMonitor = monitor
 
 	proxy, err := app.buildProxy()
 	if err != nil {
 		t.Fatalf("buildProxy() error = %v", err)
 	}
-	if proxy.monitor() != monitor {
+	if proxy.TrafficMonitor() != monitor {
 		t.Fatal("proxy monitor was not attached")
 	}
 }
@@ -344,7 +375,7 @@ func TestServeReturnsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := app.serve(ctx, NewProxy(nil, nil, nil))
+	err := app.serve(ctx, httpproxy.NewProxy(nil, nil, nil))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("serve() error = %v, want context.Canceled", err)
 	}

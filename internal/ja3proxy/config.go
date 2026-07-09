@@ -1,11 +1,5 @@
 package ja3proxy
 
-import (
-	"crypto/ecdsa"
-	"crypto/tls"
-	"crypto/x509"
-)
-
 type RunningConfig struct {
 	DumpTraffic       bool
 	LogLevel          string
@@ -21,14 +15,4 @@ type RunningConfig struct {
 	Key               string
 	Upstream          string
 	TUI               bool
-}
-
-type CertificateAuthority struct {
-	tlsCert  tls.Certificate
-	x509Cert *x509.Certificate
-}
-
-type SessionKeyHelper struct {
-	privateKey *ecdsa.PrivateKey
-	PEMBlock   []byte
 }

@@ -9,6 +9,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/fingerprint"
 )
 
 const (
@@ -192,12 +194,12 @@ func applyTLSFingerprintOptions(config *RunningConfig, options cliOptions, speci
 		return nil
 	}
 
-	fingerprint, err := parseTLSFingerprintSpec(fingerprintSpec)
+	fp, err := fingerprint.ParseSpec(fingerprintSpec)
 	if err != nil {
 		return err
 	}
-	config.TLSClient = fingerprint.Client
-	config.TLSVersion = fingerprint.Version
+	config.TLSClient = fp.Client
+	config.TLSVersion = fp.Version
 	return nil
 }
 

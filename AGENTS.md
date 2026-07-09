@@ -4,11 +4,12 @@
 
 JA3Proxy is a Go CLI application. The command entrypoint lives in
 `cmd/ja3proxy/`, while runtime implementation and tests live in
-`internal/ja3proxy/`. Runtime files are split by protocol or concern, such as
-`proxy.go`, `socks5.go`, `upstream_tls.go`, `cert.go`, and matching
-`*_test.go` files. The module definition is in `go.mod` and `go.sum`. Build
-and container assets are at the repository root: `makefile`, `Dockerfile`, and
-`compose.yaml`. Static branding assets live in `assets/`.
+`internal/ja3proxy/`. The root package handles CLI/runtime wiring; focused
+subpackages cover `proxy/`, `tunnel/`, `fingerprint/`, `upstreamtls/`,
+`certstore/`, `traffic/`, `dialer/`, `pipe/`, `tui/`, `netutil/`, and `e2e/`.
+The module definition is in `go.mod` and `go.sum`. Build and container assets
+are at the repository root: `makefile`, `Dockerfile`, and `compose.yaml`.
+Static branding assets live in `assets/`.
 
 ## Build, Test, and Development Commands
 

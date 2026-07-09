@@ -49,8 +49,10 @@ go build -o ja3proxy ./cmd/ja3proxy
 ./ja3proxy --listen :8080 --tls-fingerprint 360Browser@7.5
 ```
 
-The command entrypoint lives in `cmd/ja3proxy`; the runtime implementation and
-tests live in `internal/ja3proxy`.
+The command entrypoint lives in `cmd/ja3proxy`. Runtime wiring and CLI parsing
+live in `internal/ja3proxy`, with focused subpackages for proxy protocols,
+TLS tunneling, fingerprint catalogs, upstream TLS profiles, certificates,
+traffic monitoring, dialers, pipe forwarding, TUI rendering, and e2e tests.
 
 Test the proxy:
 

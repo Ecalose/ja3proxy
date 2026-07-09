@@ -3,7 +3,7 @@ package main
 import (
 	"crypto/tls"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 
 	utls "github.com/refraction-networking/utls"
@@ -180,6 +180,7 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 	defer clientConn.Close()
 	var destTLSConn *upstreamTLSConn
 	routeHost := sni
+	logger := slog.With("component", "tls_tunnel", "sni", sni)
 
 	config := &tls.Config{
 		InsecureSkipVerify: true,
@@ -213,12 +214,12 @@ func (handler *TunnelHandler) Connect(sni string, destConn net.Conn, clientConn 
 	)
 	err := clientTLSConn.Handshake()
 	if err != nil {
-		log.Println("Failed to perform TLS handshake: ", err)
+		logger.Warn("client TLS handshake failed", "err", err)
 		return
 	}
 
 	if destTLSConn == nil {
-		log.Println("Failed to establish upstream TLS connection")
+		logger.Error("upstream TLS connection was not established")
 		return
 	}
 

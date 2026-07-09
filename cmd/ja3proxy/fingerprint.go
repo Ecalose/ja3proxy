@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
@@ -107,7 +107,13 @@ func (s *TLSFingerprintStore) ApplyFile(path string) error {
 		return err
 	}
 
-	log.Printf("loaded TLS fingerprint %s %s from %s", fingerprint.Version, fingerprint.Client, path)
+	slog.Info(
+		"loaded TLS fingerprint",
+		"component", "fingerprint",
+		"client", fingerprint.Client,
+		"version", fingerprint.Version,
+		"path", path,
+	)
 	return nil
 }
 
@@ -137,7 +143,7 @@ func (s *TLSFingerprintStore) WatchFile(ctx context.Context, path string, interv
 			case <-ticker.C:
 				stat, err := os.Stat(path)
 				if err != nil {
-					log.Printf("check TLS fingerprint config: %v", err)
+					slog.Error("check TLS fingerprint config failed", "component", "fingerprint", "path", path, "err", err)
 					continue
 				}
 				if !stat.ModTime().After(lastModTime) && stat.Size() == lastSize {
@@ -145,7 +151,7 @@ func (s *TLSFingerprintStore) WatchFile(ctx context.Context, path string, interv
 				}
 
 				if err := s.ApplyFile(path); err != nil {
-					log.Printf("reload TLS fingerprint config: %v", err)
+					slog.Error("reload TLS fingerprint config failed", "component", "fingerprint", "path", path, "err", err)
 					continue
 				}
 				lastModTime = stat.ModTime()

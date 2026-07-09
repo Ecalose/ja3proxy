@@ -1,9 +1,11 @@
 package main
 
 import (
+	"errors"
 	"io"
-	"log"
+	"log/slog"
 	"net"
+	"strings"
 )
 
 func junction(destConn net.Conn, clientConn net.Conn) {
@@ -14,12 +16,12 @@ func pipeConns(destConn net.Conn, clientConn net.Conn, destWriter io.Writer, cli
 	chDone := make(chan struct{}, 2)
 
 	go func() {
-		copyAndClose(destWriter, clientConn, destConn, "copy client to dest error:")
+		copyAndClose(destWriter, clientConn, destConn, "client_to_dest")
 		chDone <- struct{}{}
 	}()
 
 	go func() {
-		copyAndClose(clientWriter, destConn, clientConn, "copy dest to client error:")
+		copyAndClose(clientWriter, destConn, clientConn, "dest_to_client")
 		chDone <- struct{}{}
 	}()
 
@@ -28,10 +30,21 @@ func pipeConns(destConn net.Conn, clientConn net.Conn, destWriter io.Writer, cli
 	<-chDone
 }
 
-func copyAndClose(dst io.Writer, src io.Reader, closeConn io.Closer, logPrefix string) {
+func copyAndClose(dst io.Writer, src io.Reader, closeConn io.Closer, direction string) {
 	defer closeConn.Close()
 
 	if _, err := io.Copy(dst, src); err != nil {
-		log.Println(logPrefix, err)
+		if isExpectedCopyError(err) {
+			slog.Debug("proxy pipe closed", "component", "pipe", "direction", direction, "err", err)
+			return
+		}
+		slog.Warn("proxy pipe failed", "component", "pipe", "direction", direction, "err", err)
 	}
+}
+
+func isExpectedCopyError(err error) bool {
+	return errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrClosedPipe) ||
+		errors.Is(err, net.ErrClosed) ||
+		strings.Contains(err.Error(), "use of closed network connection")
 }

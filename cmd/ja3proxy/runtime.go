@@ -5,7 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -111,9 +111,13 @@ func (app *App) parseFlags(args []string) error {
 }
 
 func (app *App) configureLogging() {
+	level := slog.LevelInfo
 	if app.Config.Debug {
+		level = slog.LevelDebug
 		cflog.Level = cflog.LevelDebug
 	}
+
+	configureDefaultLogger(level)
 }
 
 func (app *App) ensureCA() error {
@@ -124,7 +128,12 @@ func (app *App) ensureCA() error {
 			return fmt.Errorf("found CA key %q, but no corresponding cert %q", app.Config.Key, app.Config.Cert)
 		}
 
-		log.Println("CA cert and key do not exist, generating")
+		slog.Info(
+			"generating missing CA certificate and key",
+			"component", "runtime",
+			"cert", app.Config.Cert,
+			"key", app.Config.Key,
+		)
 		if err := app.CA.Generate(app.Config.Cert, app.Config.Key); err != nil {
 			return fmt.Errorf("failed generating CA: %w", err)
 		}
@@ -197,9 +206,14 @@ func (app *App) serve(ctx context.Context, proxy *Proxy) error {
 		Handler: proxy,
 	}
 
-	fmt.Printf(
-		"HTTP/SOCKS5 Proxy Server listen at %s:%s, with tls fingerprint %s %s\n",
-		app.Config.Addr, app.Config.Port, app.configuredTLSFingerprint().Version, app.configuredTLSFingerprint().Client,
+	fingerprint := app.configuredTLSFingerprint()
+	slog.Info(
+		"proxy server listening",
+		"component", "runtime",
+		"protocols", "HTTP/SOCKS5",
+		"addr", net.JoinHostPort(app.Config.Addr, app.Config.Port),
+		"tls_client", fingerprint.Client,
+		"tls_version", fingerprint.Version,
 	)
 	stopClosingServer := context.AfterFunc(ctx, func() {
 		_ = server.Close()

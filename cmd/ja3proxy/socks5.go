@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"strconv"
 	"time"
@@ -41,36 +41,38 @@ func (request socks5Request) addr() string {
 func (p *Proxy) handleSOCKS5(conn net.Conn) {
 	defer conn.Close()
 
+	logger := slog.With("component", "socks5")
 	reader := bufio.NewReader(conn)
 	if err := negotiateSOCKS5(conn, reader); err != nil {
-		log.Printf("SOCKS5 negotiation error: %v", err)
+		logger.Warn("negotiation failed", "err", err)
 		return
 	}
 
 	request, err := readSOCKS5Request(reader)
 	if err != nil {
 		_ = writeSOCKS5Reply(conn, socks5AddressFail)
-		log.Printf("SOCKS5 request error: %v", err)
+		logger.Warn("request read failed", "err", err)
 		return
 	}
 	if request.command != socks5Connect {
 		_ = writeSOCKS5Reply(conn, socks5CommandFail)
-		log.Printf("SOCKS5 unsupported command: %d", request.command)
+		logger.Warn("unsupported command", "command", request.command)
 		return
 	}
 
 	destAddr := request.addr()
-	log.Printf("socks5 proxy to %s", destAddr)
+	logger = logger.With("target", destAddr)
+	logger.Info("opening tunnel")
 	destConn, err := p.dial("tcp", destAddr)
 	if err != nil {
 		_ = writeSOCKS5Reply(conn, socks5GeneralFail)
-		log.Printf("SOCKS5 dial error: %v", err)
+		logger.Warn("dial target failed", "err", err)
 		return
 	}
 
 	if err := writeSOCKS5Reply(conn, socks5Succeeded); err != nil {
 		destConn.Close()
-		log.Printf("SOCKS5 reply error: %v", err)
+		logger.Warn("reply failed", "err", err)
 		return
 	}
 
@@ -175,6 +177,7 @@ func writeSOCKS5Reply(conn net.Conn, status byte) error {
 }
 
 func (p *Proxy) handleSOCKS5Tunnel(host string, port uint16, destConn net.Conn, clientConn net.Conn, reader *bufio.Reader) {
+	logger := slog.With("component", "socks5", "target", net.JoinHostPort(host, strconv.Itoa(int(port))))
 	if port == 443 {
 		p.connect(host, destConn, &bufferedReadConn{
 			Conn:   clientConn,
@@ -185,19 +188,19 @@ func (p *Proxy) handleSOCKS5Tunnel(host string, port uint16, destConn net.Conn, 
 
 	if err := clientConn.SetReadDeadline(time.Now().Add(socks5TLSPeekTime)); err != nil {
 		destConn.Close()
-		log.Printf("SOCKS5 set read deadline error: %v", err)
+		logger.Error("set read deadline failed", "err", err)
 		return
 	}
 	first, err := reader.Peek(1)
 	if deadlineErr := clientConn.SetReadDeadline(time.Time{}); deadlineErr != nil {
 		destConn.Close()
-		log.Printf("SOCKS5 clear read deadline error: %v", deadlineErr)
+		logger.Error("clear read deadline failed", "err", deadlineErr)
 		return
 	}
 	if err != nil {
 		if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
 			destConn.Close()
-			log.Printf("SOCKS5 client read error: %v", err)
+			logger.Warn("client read failed", "err", err)
 			return
 		}
 	}

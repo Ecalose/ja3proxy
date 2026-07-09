@@ -3,7 +3,7 @@ package main
 import (
 	"bufio"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -87,12 +87,13 @@ func (p *Proxy) transport() http.RoundTripper {
 }
 
 func (p *Proxy) handleTunneling(w http.ResponseWriter, r *http.Request) {
-	log.Printf("proxy to %s", r.Host)
+	logger := slog.With("component", "http_connect", "target", r.Host)
+	logger.Info("opening tunnel")
 
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
-		log.Println("Hijacking not supported")
+		logger.Error("hijacking not supported")
 		return
 	}
 
@@ -100,7 +101,7 @@ func (p *Proxy) handleTunneling(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		log.Println("Tunneling err: ", err)
+		logger.Warn("dial target failed", "err", err)
 		return
 	}
 
@@ -108,7 +109,7 @@ func (p *Proxy) handleTunneling(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		destConn.Close()
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		log.Println("Hijack error: ", err)
+		logger.Error("hijack failed", "err", err)
 		return
 	}
 
@@ -123,13 +124,13 @@ func (p *Proxy) handleTunneling(w http.ResponseWriter, r *http.Request) {
 	if _, err := io.WriteString(clientRW, connectEstablishedResponse); err != nil {
 		destConn.Close()
 		clientConn.Close()
-		log.Println("CONNECT response write error: ", err)
+		logger.Warn("write CONNECT response failed", "err", err)
 		return
 	}
 	if err := clientRW.Flush(); err != nil {
 		destConn.Close()
 		clientConn.Close()
-		log.Println("CONNECT response flush error: ", err)
+		logger.Warn("flush CONNECT response failed", "err", err)
 		return
 	}
 
@@ -151,13 +152,26 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, req *http.Request) {
 	resp, err := p.transport().RoundTrip(outReq)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		log.Println(err)
+		slog.Warn(
+			"HTTP upstream request failed",
+			"component", "http_proxy",
+			"method", req.Method,
+			"target", httpRequestTarget(req),
+			"err", err,
+		)
 		return
 	}
 	defer resp.Body.Close()
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
+}
+
+func httpRequestTarget(req *http.Request) string {
+	if req.URL != nil && req.URL.Host != "" {
+		return req.URL.Host
+	}
+	return req.Host
 }
 
 func copyHeader(dst, src http.Header) {

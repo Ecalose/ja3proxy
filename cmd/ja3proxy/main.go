@@ -1,17 +1,20 @@
 package main
 
 import (
-	"log"
+	"log/slog"
+	"os"
 
 	cflog "github.com/cloudflare/cfssl/log"
 )
 
 func init() {
 	cflog.Level = cflog.LevelWarning
+	configureDefaultLogger(slog.LevelInfo)
 }
 
 func main() {
 	if err := newDefaultApp().run(); err != nil {
-		log.Fatal(err)
+		slog.Error("run failed", "component", "runtime", "err", err)
+		os.Exit(1)
 	}
 }

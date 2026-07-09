@@ -2,7 +2,7 @@ package main
 
 import (
 	"encoding/hex"
-	"log"
+	"log/slog"
 	"net"
 	"unicode"
 )
@@ -14,14 +14,14 @@ type DebugWriter struct {
 
 func (writer DebugWriter) Write(data []byte) (n int, err error) {
 	if len(data) == 0 {
-		log.Printf("%s send 0 bytes: \n", writer.Name)
+		slog.Debug("proxy data", "component", "debug", "peer", writer.Name, "bytes", 0)
 		return writer.Conn.Write(data)
 	}
 
 	if unicode.IsPrint(rune(data[0])) {
-		log.Printf("%s send %d bytes: \n%s", writer.Name, len(data), string(data))
+		slog.Debug("proxy data", "component", "debug", "peer", writer.Name, "bytes", len(data), "encoding", "text", "data", string(data))
 	} else {
-		log.Printf("%s send %d bytes: \n%s", writer.Name, len(data), hex.Dump(data))
+		slog.Debug("proxy data", "component", "debug", "peer", writer.Name, "bytes", len(data), "encoding", "hex", "data", hex.Dump(data))
 	}
 
 	return writer.Conn.Write(data)

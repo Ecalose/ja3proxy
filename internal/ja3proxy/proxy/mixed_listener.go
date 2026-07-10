@@ -2,36 +2,47 @@ package proxy
 
 import (
 	"bufio"
+	"fmt"
 	"net"
+	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 const defaultHTTPConnBack = 64
 
-type mixedProxyListener struct {
+const (
+	ProtocolMixed  = "mixed"
+	ProtocolHTTP   = "http"
+	ProtocolSOCKS5 = "socks5"
+)
+
+type MixedProxyListener struct {
 	base      net.Listener
 	proxy     *Proxy
 	httpConns chan net.Conn
 	done      chan struct{}
 	closeOnce sync.Once
+	protocol  atomic.Uint32
 }
 
-func newMixedProxyListener(base net.Listener, proxy *Proxy) net.Listener {
-	listener := &mixedProxyListener{
+func newMixedProxyListener(base net.Listener, proxy *Proxy) *MixedProxyListener {
+	listener := &MixedProxyListener{
 		base:      base,
 		proxy:     proxy,
 		httpConns: make(chan net.Conn, defaultHTTPConnBack),
 		done:      make(chan struct{}),
 	}
+	listener.protocol.Store(protocolCode(ProtocolMixed))
 	go listener.acceptLoop()
 	return listener
 }
 
-func NewMixedProxyListener(base net.Listener, proxy *Proxy) net.Listener {
+func NewMixedProxyListener(base net.Listener, proxy *Proxy) *MixedProxyListener {
 	return newMixedProxyListener(base, proxy)
 }
 
-func (listener *mixedProxyListener) Accept() (net.Conn, error) {
+func (listener *MixedProxyListener) Accept() (net.Conn, error) {
 	select {
 	case conn := <-listener.httpConns:
 		return conn, nil
@@ -40,7 +51,7 @@ func (listener *mixedProxyListener) Accept() (net.Conn, error) {
 	}
 }
 
-func (listener *mixedProxyListener) Close() error {
+func (listener *MixedProxyListener) Close() error {
 	var err error
 	listener.closeOnce.Do(func() {
 		close(listener.done)
@@ -49,11 +60,45 @@ func (listener *mixedProxyListener) Close() error {
 	return err
 }
 
-func (listener *mixedProxyListener) Addr() net.Addr {
+func (listener *MixedProxyListener) Addr() net.Addr {
 	return listener.base.Addr()
 }
 
-func (listener *mixedProxyListener) acceptLoop() {
+func (listener *MixedProxyListener) SetProtocol(protocol string) error {
+	normalized := strings.ToLower(strings.TrimSpace(protocol))
+	code := protocolCode(normalized)
+	if code == 0 {
+		return fmt.Errorf("unsupported listen protocol %q", protocol)
+	}
+	listener.protocol.Store(code)
+	return nil
+}
+
+func (listener *MixedProxyListener) Protocol() string {
+	switch listener.protocol.Load() {
+	case protocolCode(ProtocolHTTP):
+		return ProtocolHTTP
+	case protocolCode(ProtocolSOCKS5):
+		return ProtocolSOCKS5
+	default:
+		return ProtocolMixed
+	}
+}
+
+func protocolCode(protocol string) uint32 {
+	switch protocol {
+	case ProtocolMixed:
+		return 1
+	case ProtocolHTTP:
+		return 2
+	case ProtocolSOCKS5:
+		return 3
+	default:
+		return 0
+	}
+}
+
+func (listener *MixedProxyListener) acceptLoop() {
 	for {
 		conn, err := listener.base.Accept()
 		if err != nil {
@@ -64,7 +109,7 @@ func (listener *mixedProxyListener) acceptLoop() {
 	}
 }
 
-func (listener *mixedProxyListener) route(conn net.Conn) {
+func (listener *MixedProxyListener) route(conn net.Conn) {
 	reader := bufio.NewReader(conn)
 	first, err := reader.Peek(1)
 	if err != nil {
@@ -76,8 +121,14 @@ func (listener *mixedProxyListener) route(conn net.Conn) {
 		Conn:   conn,
 		reader: reader,
 	}
-	if first[0] == socks5Version {
+	isSOCKS5 := first[0] == socks5Version
+	protocol := listener.Protocol()
+	if isSOCKS5 && protocol != ProtocolHTTP {
 		listener.proxy.handleSOCKS5(bufferedConn)
+		return
+	}
+	if isSOCKS5 || protocol == ProtocolSOCKS5 {
+		_ = conn.Close()
 		return
 	}
 

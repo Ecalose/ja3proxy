@@ -36,39 +36,39 @@ type TrafficSessionInfo struct {
 }
 
 type TrafficSessionSnapshot struct {
-	ID            uint64
-	Protocol      string
-	Target        string
-	ClientAddr    string
-	SNI           string
-	State         string
-	Error         string
-	StartedAt     time.Time
-	UpdatedAt     time.Time
-	ClosedAt      time.Time
-	UploadBytes   int64
-	DownloadBytes int64
+	ID            uint64    `json:"id"`
+	Protocol      string    `json:"protocol"`
+	Target        string    `json:"target"`
+	ClientAddr    string    `json:"clientAddr"`
+	SNI           string    `json:"sni"`
+	State         string    `json:"state"`
+	Error         string    `json:"error,omitempty"`
+	StartedAt     time.Time `json:"startedAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+	ClosedAt      time.Time `json:"closedAt,omitempty"`
+	UploadBytes   int64     `json:"uploadBytes"`
+	DownloadBytes int64     `json:"downloadBytes"`
 }
 
 type TrafficEventSnapshot struct {
-	Time      time.Time
-	SessionID uint64
-	Level     string
-	Message   string
-	Protocol  string
-	Target    string
-	Error     string
+	Time      time.Time `json:"time"`
+	SessionID uint64    `json:"sessionId,omitempty"`
+	Level     string    `json:"level"`
+	Message   string    `json:"message"`
+	Protocol  string    `json:"protocol,omitempty"`
+	Target    string    `json:"target,omitempty"`
+	Error     string    `json:"error,omitempty"`
 }
 
 type TrafficSnapshot struct {
-	CapturedAt         time.Time
-	StartedAt          time.Time
-	ActiveSessions     int
-	TotalSessions      uint64
-	TotalUploadBytes   int64
-	TotalDownloadBytes int64
-	Sessions           []TrafficSessionSnapshot
-	Events             []TrafficEventSnapshot
+	CapturedAt         time.Time                `json:"capturedAt"`
+	StartedAt          time.Time                `json:"startedAt"`
+	ActiveSessions     int                      `json:"activeSessions"`
+	TotalSessions      uint64                   `json:"totalSessions"`
+	TotalUploadBytes   int64                    `json:"totalUploadBytes"`
+	TotalDownloadBytes int64                    `json:"totalDownloadBytes"`
+	Sessions           []TrafficSessionSnapshot `json:"sessions"`
+	Events             []TrafficEventSnapshot   `json:"events"`
 }
 
 type trafficSession struct {

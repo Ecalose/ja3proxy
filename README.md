@@ -18,6 +18,7 @@ keeping familiar proxy interfaces for clients.
 - Automatic local CA generation when no certificate/key pair is provided.
 - Optional SOCKS5 upstream proxy for both HTTP and HTTPS traffic.
 - Optional live TUI dashboard for active traffic and recent proxy events.
+- Optional embedded web panel for traffic inspection and live proxy configuration.
 - Docker and Docker Compose examples included.
 
 ## How it works
@@ -112,7 +113,35 @@ Diagnostics:
   --log-level string              log level: debug, info, warn, error (default "info")
   --dump-traffic                  log proxied payload data; sensitive; implies debug logging
   --tui                           show a live terminal traffic dashboard
+  --web-panel string              serve a live web dashboard, e.g. 127.0.0.1:9090
 ```
+
+### Web panel
+
+Enable the traffic and configuration panel on a separate listen address:
+
+```bash
+./ja3proxy \
+  --listen :8080 \
+  --tls-fingerprint chrome@120 \
+  --web-panel 127.0.0.1:9090
+```
+
+Open `http://127.0.0.1:9090` to see active tunnels, aggregate upload and
+download totals, the current TLS fingerprint, recent sessions, and runtime
+events. The Settings tab can change the proxy port, choose mixed HTTP/SOCKS5,
+HTTP-only, or SOCKS5-only listening, select a TLS fingerprint preset, and switch
+between direct and SOCKS5 upstream routing. Changes apply to new connections
+without interrupting active sessions. When `--tls-fingerprint-file` is used,
+that file remains the source of truth for the TLS fingerprint. Listen host and
+CA changes still require a restart.
+
+The panel is embedded in the JA3Proxy binary and does not require a separate
+frontend build or Node.js runtime. It can run alongside `--tui`.
+
+The panel has no authentication because it is intended as a local management
+surface. Keep it bound to a loopback address unless access is protected by a
+trusted reverse proxy or firewall.
 
 Example with a SOCKS5 upstream proxy:
 

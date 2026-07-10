@@ -132,3 +132,20 @@ func TestFormatTLSFingerprintCatalog(t *testing.T) {
 		}
 	}
 }
+
+func TestPresetsCanBeParsed(t *testing.T) {
+	presets := Presets()
+	if len(presets) == 0 {
+		t.Fatal("Presets() returned no fingerprints")
+	}
+	for _, preset := range presets {
+		spec := preset.Client + "@" + preset.Version
+		parsed, err := ParseSpec(spec)
+		if err != nil {
+			t.Fatalf("ParseSpec(%q) error = %v", spec, err)
+		}
+		if parsed != preset {
+			t.Fatalf("ParseSpec(%q) = %+v, want %+v", spec, parsed, preset)
+		}
+	}
+}

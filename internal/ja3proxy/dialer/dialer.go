@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/net/proxy"
@@ -16,9 +17,71 @@ type UpstreamDialer struct {
 	Transport http.RoundTripper
 }
 
+// DynamicUpstreamDialer lets new connections pick up an upstream proxy change
+// without interrupting connections that are already in flight.
+type DynamicUpstreamDialer struct {
+	mu       sync.RWMutex
+	current  *UpstreamDialer
+	upstream string
+	timeout  time.Duration
+}
+
+func NewDynamicUpstreamDialer(socksAddr string, timeout time.Duration) (*DynamicUpstreamDialer, error) {
+	socksAddr = strings.TrimSpace(socksAddr)
+	current, err := NewUpstreamDialer(socksAddr, timeout)
+	if err != nil {
+		return nil, err
+	}
+	return &DynamicUpstreamDialer{current: current, upstream: socksAddr, timeout: timeout}, nil
+}
+
+func (u *DynamicUpstreamDialer) Configure(socksAddr string) error {
+	socksAddr = strings.TrimSpace(socksAddr)
+	next, err := NewUpstreamDialer(socksAddr, u.timeout)
+	if err != nil {
+		return err
+	}
+
+	u.mu.Lock()
+	previous := u.current
+	u.current = next
+	u.upstream = socksAddr
+	u.mu.Unlock()
+
+	if previous != nil {
+		if transport, ok := previous.Transport.(*http.Transport); ok {
+			transport.CloseIdleConnections()
+		}
+	}
+	return nil
+}
+
+func (u *DynamicUpstreamDialer) Upstream() string {
+	if u == nil {
+		return ""
+	}
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	return u.upstream
+}
+
+func (u *DynamicUpstreamDialer) Dial(network, addr string) (net.Conn, error) {
+	u.mu.RLock()
+	current := u.current
+	u.mu.RUnlock()
+	return current.Dial(network, addr)
+}
+
+func (u *DynamicUpstreamDialer) RoundTrip(request *http.Request) (*http.Response, error) {
+	u.mu.RLock()
+	current := u.current
+	u.mu.RUnlock()
+	return current.Transport.RoundTrip(request)
+}
+
 func NewUpstreamDialer(socksAddr string, timeout time.Duration) (*UpstreamDialer, error) {
 	var dialer proxy.Dialer
-	var transport http.RoundTripper = http.DefaultTransport
+	var transport http.RoundTripper
 
 	if socksAddr != "" {
 		parsedURL, err := parseSocksURL(socksAddr)
@@ -43,7 +106,12 @@ func NewUpstreamDialer(socksAddr string, timeout time.Duration) (*UpstreamDialer
 		}
 		transport = defaultTransport
 	} else {
-		dialer = &net.Dialer{Timeout: timeout}
+		directDialer := &net.Dialer{Timeout: timeout}
+		dialer = directDialer
+		directTransport := http.DefaultTransport.(*http.Transport).Clone()
+		directTransport.Proxy = nil
+		directTransport.DialContext = directDialer.DialContext
+		transport = directTransport
 	}
 
 	return &UpstreamDialer{

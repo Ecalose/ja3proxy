@@ -7,7 +7,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	cflog "github.com/cloudflare/cfssl/log"
@@ -20,6 +24,7 @@ import (
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/tui"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/tunnel"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/upstreamtls"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/webpanel"
 )
 
 type App struct {
@@ -29,6 +34,10 @@ type App struct {
 	TLSFingerprints     *fingerprint.TLSFingerprintStore
 	UpstreamTLSProfiles *upstreamtls.UpstreamTLSProfileStore
 	TrafficMonitor      *traffic.TrafficMonitor
+	UpstreamDialer      *dialer.DynamicUpstreamDialer
+	proxyListener       *rebindableListener
+	protocolListener    *httpproxy.MixedProxyListener
+	configMu            sync.Mutex
 
 	watchFingerprintFile func(context.Context, string, time.Duration) error
 }
@@ -94,7 +103,7 @@ func (app *App) configureRuntime(ctx context.Context) error {
 }
 
 func (app *App) ensureTrafficMonitor() {
-	if app.Config.TUI && app.TrafficMonitor == nil {
+	if (app.Config.TUI || app.Config.WebPanel != "") && app.TrafficMonitor == nil {
 		app.TrafficMonitor = traffic.NewTrafficMonitor()
 	}
 }
@@ -103,7 +112,7 @@ func (app *App) serveConfiguredProxy(ctx context.Context, proxyServer *httpproxy
 	if app.Config.TUI {
 		return app.serveWithTUI(ctx, proxyServer)
 	}
-	return app.serve(ctx, proxyServer)
+	return app.serveProxyServices(ctx, proxyServer)
 }
 
 func (app *App) serveWithTUI(ctx context.Context, proxyServer *httpproxy.Proxy) error {
@@ -112,8 +121,56 @@ func (app *App) serveWithTUI(ctx context.Context, proxyServer *httpproxy.Proxy) 
 		TLSClient:     app.Config.TLSClient,
 		TLSVersion:    app.Config.TLSVersion,
 	}, app.TrafficMonitor, func(runCtx context.Context) error {
-		return app.serve(runCtx, proxyServer)
+		return app.serveProxyServices(runCtx, proxyServer)
 	})
+}
+
+func (app *App) serveProxyServices(ctx context.Context, proxyServer *httpproxy.Proxy) error {
+	if app.Config.WebPanel == "" {
+		return app.serve(ctx, proxyServer)
+	}
+
+	panel := webpanel.Server{
+		Address: app.Config.WebPanel,
+		Monitor: app.TrafficMonitor,
+		Runtime: app.webPanelRuntimeStatus,
+		Update:  app.updateProxyConfig,
+	}
+	return runServices(ctx, app.serveService(proxyServer), panel.Serve)
+}
+
+type runtimeService func(context.Context) error
+
+func (app *App) serveService(proxyServer *httpproxy.Proxy) runtimeService {
+	return func(ctx context.Context) error {
+		return app.serve(ctx, proxyServer)
+	}
+}
+
+func runServices(ctx context.Context, services ...runtimeService) error {
+	ctx = runtimeContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errCh := make(chan error, len(services))
+	for _, service := range services {
+		go func(run runtimeService) {
+			errCh <- run(runCtx)
+		}(service)
+	}
+
+	firstErr := <-errCh
+	cancel()
+	for range len(services) - 1 {
+		<-errCh
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return firstErr
 }
 
 func runtimeContext(ctx context.Context) context.Context {
@@ -200,16 +257,188 @@ func (app *App) configureUpstreamTLSProfiles() error {
 }
 
 func (app *App) buildProxy() (*httpproxy.Proxy, error) {
-	upstreamDialer, err := dialer.NewUpstreamDialer(app.Config.Upstream, time.Second*10)
+	upstreamDialer, err := dialer.NewDynamicUpstreamDialer(app.Config.Upstream, time.Second*10)
 	if err != nil {
 		return nil, fmt.Errorf("configure upstream proxy: %w", err)
 	}
+	app.UpstreamDialer = upstreamDialer
 
-	proxyServer := httpproxy.NewProxy(upstreamDialer.Dial, app.tunnelHandler().Connect, upstreamDialer.Transport)
+	proxyServer := httpproxy.NewProxy(upstreamDialer.Dial, app.tunnelHandler().Connect, upstreamDialer)
 	if app.TrafficMonitor != nil {
 		proxyServer.WithTrafficMonitor(app.TrafficMonitor)
 	}
 	return proxyServer, nil
+}
+
+func (app *App) updateProxyConfig(update webpanel.ConfigUpdate) (webpanel.RuntimeStatus, error) {
+	app.configMu.Lock()
+	defer app.configMu.Unlock()
+
+	var nextFingerprint fingerprint.TLSFingerprint
+	var nextListener net.Listener
+	var nextListenAddress string
+	if update.ProxyProtocol != nil {
+		if app.protocolListener == nil {
+			return webpanel.RuntimeStatus{}, fmt.Errorf("proxy protocol listener is unavailable")
+		}
+		if err := validateProxyProtocol(*update.ProxyProtocol); err != nil {
+			return webpanel.RuntimeStatus{}, err
+		}
+	}
+	if update.ProxyPort != nil {
+		if *update.ProxyPort < 1 || *update.ProxyPort > 65535 {
+			return webpanel.RuntimeStatus{}, fmt.Errorf("proxy port must be between 1 and 65535")
+		}
+		if app.proxyListener == nil {
+			return webpanel.RuntimeStatus{}, fmt.Errorf("proxy listener is unavailable")
+		}
+		currentAddress := app.proxyListener.Addr().String()
+		host, currentPort, err := net.SplitHostPort(currentAddress)
+		if err != nil {
+			return webpanel.RuntimeStatus{}, fmt.Errorf("read current proxy address: %w", err)
+		}
+		nextListenAddress = net.JoinHostPort(host, strconv.Itoa(*update.ProxyPort))
+		if currentPort != strconv.Itoa(*update.ProxyPort) {
+			nextListener, err = net.Listen("tcp", nextListenAddress)
+			if err != nil {
+				return webpanel.RuntimeStatus{}, fmt.Errorf("listen on %s: %w", nextListenAddress, err)
+			}
+			defer func() {
+				if nextListener != nil {
+					_ = nextListener.Close()
+				}
+			}()
+		}
+	}
+	if update.TLSFingerprint != nil {
+		if app.Config.FingerprintConfig != "" {
+			return webpanel.RuntimeStatus{}, fmt.Errorf("TLS fingerprint is managed by --tls-fingerprint-file")
+		}
+		parsed, err := fingerprint.ParseSpec(strings.TrimSpace(*update.TLSFingerprint))
+		if err != nil {
+			return webpanel.RuntimeStatus{}, err
+		}
+		nextFingerprint = parsed
+	}
+	if update.Upstream != nil {
+		if app.UpstreamDialer == nil {
+			return webpanel.RuntimeStatus{}, fmt.Errorf("upstream dialer is unavailable")
+		}
+		if err := app.UpstreamDialer.Configure(*update.Upstream); err != nil {
+			return webpanel.RuntimeStatus{}, fmt.Errorf("configure upstream proxy: %w", err)
+		}
+		app.Config.Upstream = app.UpstreamDialer.Upstream()
+	}
+	if update.TLSFingerprint != nil {
+		app.TLSFingerprints.Set(nextFingerprint)
+	}
+	if update.ProxyProtocol != nil {
+		protocol := strings.ToLower(strings.TrimSpace(*update.ProxyProtocol))
+		if err := app.protocolListener.SetProtocol(protocol); err != nil {
+			return webpanel.RuntimeStatus{}, err
+		}
+		app.Config.ProxyProtocol = protocol
+	}
+	if nextListener != nil {
+		if err := app.proxyListener.Rebind(nextListener); err != nil {
+			return webpanel.RuntimeStatus{}, fmt.Errorf("switch proxy listener: %w", err)
+		}
+		nextListener = nil
+		app.Config.Listen = nextListenAddress
+		app.Config.Port = strconv.Itoa(*update.ProxyPort)
+	}
+
+	status := app.webPanelRuntimeStatusLocked()
+	logutil.Info("runtime", "proxy configuration updated", "proxy_listen", status.ProxyListen, "tls_fingerprint", status.TLSClient+"@"+status.TLSVersion, "upstream", status.Upstream)
+	if app.TrafficMonitor != nil {
+		app.TrafficMonitor.RecordEvent("info", "proxy configuration updated", traffic.TrafficSessionInfo{}, nil)
+	}
+	return status, nil
+}
+
+func validateProxyProtocol(protocol string) error {
+	switch strings.ToLower(strings.TrimSpace(protocol)) {
+	case httpproxy.ProtocolMixed, httpproxy.ProtocolHTTP, httpproxy.ProtocolSOCKS5:
+		return nil
+	default:
+		return fmt.Errorf("proxy protocol must be mixed, http, or socks5")
+	}
+}
+
+func (app *App) webPanelRuntimeStatus() webpanel.RuntimeStatus {
+	app.configMu.Lock()
+	defer app.configMu.Unlock()
+	return app.webPanelRuntimeStatusLocked()
+}
+
+func (app *App) webPanelRuntimeStatusLocked() webpanel.RuntimeStatus {
+	fp := app.configuredTLSFingerprint()
+	fingerprintOptions := make([]string, 0)
+	for _, preset := range fingerprint.Presets() {
+		fingerprintOptions = append(fingerprintOptions, preset.Client+"@"+preset.Version)
+	}
+	upstream := ""
+	if app.UpstreamDialer != nil {
+		upstream = app.UpstreamDialer.Upstream()
+	} else if app.Config != nil {
+		upstream = app.Config.Upstream
+	}
+	displayUpstream := redactUpstream(upstream)
+	route := "Direct connection"
+	if displayUpstream != "" {
+		route = displayUpstream
+	}
+	mode := "panel"
+	if app.Config != nil && app.Config.FingerprintConfig != "" {
+		mode = "fingerprint-file"
+	}
+	proxyListen := app.Config.listenAddress()
+	if app.proxyListener != nil {
+		proxyListen = app.proxyListener.Addr().String()
+	}
+	_, proxyPortText, _ := net.SplitHostPort(proxyListen)
+	proxyPort, _ := strconv.Atoi(proxyPortText)
+	proxyProtocol := httpproxy.ProtocolMixed
+	if app.protocolListener != nil {
+		proxyProtocol = app.protocolListener.Protocol()
+	} else if app.Config != nil && app.Config.ProxyProtocol != "" {
+		proxyProtocol = app.Config.ProxyProtocol
+	}
+	return webpanel.RuntimeStatus{
+		ProxyListen:       proxyListen,
+		ProxyPort:         proxyPort,
+		ProxyProtocol:     proxyProtocol,
+		TLSClient:         fp.Client,
+		TLSVersion:        fp.Version,
+		TLSFingerprints:   fingerprintOptions,
+		Upstream:          displayUpstream,
+		UpstreamEnabled:   upstream != "",
+		ConfigurationMode: mode,
+		Chain: []webpanel.ChainHop{
+			{Role: "Client", Address: "Proxy client"},
+			{Role: "JA3Proxy", Address: proxyListen},
+			{Role: "Route", Address: route},
+			{Role: "Target", Address: "Requested destination"},
+		},
+	}
+}
+
+func redactUpstream(upstream string) string {
+	upstream = strings.TrimSpace(upstream)
+	if upstream == "" {
+		return ""
+	}
+	if !strings.Contains(upstream, "://") {
+		upstream = "socks5://" + upstream
+	}
+	parsed, err := url.Parse(upstream)
+	if err != nil || parsed.Host == "" {
+		return upstream
+	}
+	if parsed.User != nil {
+		parsed.User = url.User(parsed.User.Username())
+	}
+	return parsed.String()
 }
 
 func (app *App) serve(ctx context.Context, proxyServer *httpproxy.Proxy) error {
@@ -223,6 +452,17 @@ func (app *App) serve(ctx context.Context, proxyServer *httpproxy.Proxy) error {
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", listenAddress, err)
 	}
+	rebindable := newRebindableListener(listener)
+	app.configMu.Lock()
+	app.proxyListener = rebindable
+	app.configMu.Unlock()
+	defer func() {
+		app.configMu.Lock()
+		if app.proxyListener == rebindable {
+			app.proxyListener = nil
+		}
+		app.configMu.Unlock()
+	}()
 	server := &http.Server{
 		Handler: proxyServer,
 	}
@@ -241,7 +481,23 @@ func (app *App) serve(ctx context.Context, proxyServer *httpproxy.Proxy) error {
 	})
 	defer stopClosingServer()
 
-	if err := server.Serve(httpproxy.NewMixedProxyListener(listener, proxyServer)); err != nil {
+	protocolListener := httpproxy.NewMixedProxyListener(rebindable, proxyServer)
+	if app.Config.ProxyProtocol != "" {
+		if err := protocolListener.SetProtocol(app.Config.ProxyProtocol); err != nil {
+			return err
+		}
+	}
+	app.configMu.Lock()
+	app.protocolListener = protocolListener
+	app.configMu.Unlock()
+	defer func() {
+		app.configMu.Lock()
+		if app.protocolListener == protocolListener {
+			app.protocolListener = nil
+		}
+		app.configMu.Unlock()
+	}()
+	if err := server.Serve(protocolListener); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil && (errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed)) {
 			return ctxErr
 		}

@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="Live traffic and runtime configuration for JA3Proxy">
+  <title>JA3Proxy / Traffic desk</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="JA3Proxy traffic desk"><strong>JA3</strong>PROXY</a>
+    <nav class="tabs" role="tablist" aria-label="Panel sections">
+      <button id="traffic-tab" class="tab active" type="button" role="tab" aria-selected="true" aria-controls="traffic-page" data-tab="traffic">Traffic</button>
+      <button id="settings-tab" class="tab" type="button" role="tab" aria-selected="false" aria-controls="settings-page" data-tab="settings">Settings</button>
+    </nav>
+    <span class="connection" id="connection"><i></i>Connecting</span>
+  </header>
+
+  <main>
+    <section class="runtime-bar" aria-label="Runtime configuration">
+      <dl class="runtime-strip">
+        <div><dt>Proxy</dt><dd id="proxy-listen">—</dd></div>
+        <div><dt>Listen protocol</dt><dd id="proxy-protocol">MIXED</dd></div>
+        <div><dt>TLS fingerprint</dt><dd id="fingerprint">—</dd></div>
+        <div><dt>Upstream</dt><dd id="upstream">DIRECT</dd></div>
+      </dl>
+    </section>
+
+    <div id="traffic-page" class="tab-page" role="tabpanel" aria-labelledby="traffic-tab">
+      <section class="metrics" aria-label="Traffic summary">
+        <article><p>Active</p><strong id="active-sessions">0</strong><small>open tunnels</small></article>
+        <article><p>Sessions</p><strong id="total-sessions">0</strong><small>since launch</small></article>
+        <article><p>Uploaded</p><strong id="total-upload">0 B</strong><small id="upload-rate">0 B/s</small></article>
+        <article><p>Downloaded</p><strong id="total-download">0 B</strong><small id="download-rate">0 B/s</small></article>
+        <article><p>Uptime</p><strong id="uptime">00:00</strong><small>monitor running</small></article>
+      </section>
+
+      <section class="workspace">
+        <article class="sessions-panel">
+          <div class="panel-head">
+            <h1>Recent sessions</h1>
+            <div class="filters" role="group" aria-label="Filter sessions">
+              <button class="active" data-filter="all" type="button">All</button>
+              <button data-filter="active" type="button">Active</button>
+              <button data-filter="failed" type="button">Failed</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>State</th><th>Protocol</th><th>Target</th><th>Client</th><th>Traffic</th><th>Age</th></tr></thead>
+              <tbody id="sessions"><tr><td colspan="6" class="empty">Waiting for the first connection.</td></tr></tbody>
+            </table>
+          </div>
+        </article>
+
+        <aside class="events-panel">
+          <div class="panel-head"><h2>Latest events</h2></div>
+          <ol id="events" class="events"><li class="empty">No events recorded.</li></ol>
+        </aside>
+      </section>
+    </div>
+
+    <section id="settings-page" class="tab-page settings-page" role="tabpanel" aria-labelledby="settings-tab" hidden>
+      <header class="settings-intro">
+        <p>Runtime controls</p>
+        <h1>Proxy settings</h1>
+        <span>Changes affect new connections. Existing tunnels continue without interruption.</span>
+      </header>
+      <form id="config-form" class="settings-form">
+        <div class="setting-field">
+          <label for="proxy-port">Proxy port</label>
+          <input id="proxy-port" name="proxyPort" type="number" min="1" max="65535" inputmode="numeric" required>
+          <small>The TCP port clients connect to.</small>
+        </div>
+        <div class="setting-field">
+          <label for="proxy-protocol-choice">Listen protocol</label>
+          <select id="proxy-protocol-choice" name="proxyProtocol">
+            <option value="mixed">HTTP + SOCKS5</option>
+            <option value="http">HTTP only</option>
+            <option value="socks5">SOCKS5 only</option>
+          </select>
+          <small>Choose which client proxy handshakes are accepted.</small>
+        </div>
+        <div class="setting-field">
+          <label for="tls-fingerprint">TLS fingerprint</label>
+          <select id="tls-fingerprint" name="tlsFingerprint"></select>
+          <small>Applied to intercepted outbound TLS connections.</small>
+        </div>
+        <div class="setting-field">
+          <label for="upstream-choice">Upstream route</label>
+          <select id="upstream-choice" name="upstreamChoice">
+            <option value="direct">Direct connection</option>
+            <option value="custom">Custom SOCKS5…</option>
+          </select>
+          <small>Send traffic directly or through another proxy.</small>
+        </div>
+        <div class="setting-field setting-wide" id="upstream-field" hidden>
+          <label for="upstream-input">SOCKS5 URL</label>
+          <input id="upstream-input" name="upstream" placeholder="socks5://127.0.0.1:1080" autocomplete="off" spellcheck="false">
+        </div>
+        <footer class="settings-actions">
+          <p class="config-note" id="config-note" aria-live="polite">Review the values, then apply when ready.</p>
+          <button type="submit">Apply changes</button>
+        </footer>
+      </form>
+    </section>
+  </main>
+
+  <div class="error-toast" id="error-toast" role="status" aria-live="polite">Panel signal lost. Retrying…</div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

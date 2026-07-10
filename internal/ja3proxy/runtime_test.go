@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/fingerprint"
 	httpproxy "github.com/lylemi/ja3proxy/internal/ja3proxy/proxy"
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/traffic"
+	"github.com/lylemi/ja3proxy/internal/ja3proxy/webpanel"
 )
 
 func newRuntimeTestApp(t *testing.T) *App {
@@ -168,6 +171,29 @@ func TestParseFlagsEnablesTUI(t *testing.T) {
 	}
 	if !app.Config.TUI {
 		t.Fatal("tui = false, want true")
+	}
+}
+
+func TestParseFlagsEnablesWebPanel(t *testing.T) {
+	app := newRuntimeTestApp(t)
+
+	err := app.parseFlags([]string{"--web-panel", "127.0.0.1:9090"})
+	if err != nil {
+		t.Fatalf("parse flags: %v", err)
+	}
+	if app.Config.WebPanel != "127.0.0.1:9090" {
+		t.Fatalf("web panel = %q, want 127.0.0.1:9090", app.Config.WebPanel)
+	}
+}
+
+func TestEnsureTrafficMonitorForWebPanel(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	app.Config.WebPanel = "127.0.0.1:9090"
+
+	app.ensureTrafficMonitor()
+
+	if app.TrafficMonitor == nil {
+		t.Fatal("traffic monitor = nil, want initialized monitor")
 	}
 }
 
@@ -370,6 +396,152 @@ func TestBuildProxyAttachesTrafficMonitor(t *testing.T) {
 	}
 }
 
+func TestUpdateProxyConfigChangesFingerprintAndRoute(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	app.TrafficMonitor = traffic.NewTrafficMonitor()
+	if _, err := app.buildProxy(); err != nil {
+		t.Fatalf("buildProxy() error = %v", err)
+	}
+	fingerprintSpec := "chrome@120"
+	upstream := "socks5://user:secret@127.0.0.1:1080"
+
+	status, err := app.updateProxyConfig(webpanel.ConfigUpdate{TLSFingerprint: &fingerprintSpec, Upstream: &upstream})
+	if err != nil {
+		t.Fatalf("updateProxyConfig() error = %v", err)
+	}
+	if status.TLSClient != "Chrome" || status.TLSVersion != "120" {
+		t.Fatalf("fingerprint = %s@%s, want Chrome@120", status.TLSClient, status.TLSVersion)
+	}
+	if status.Upstream != "socks5://user@127.0.0.1:1080" {
+		t.Fatalf("display upstream = %q, want redacted credentials", status.Upstream)
+	}
+	if !status.UpstreamEnabled || len(status.Chain) != 4 {
+		t.Fatalf("runtime status = %+v", status)
+	}
+	if app.Config.Upstream != upstream {
+		t.Fatalf("config upstream = %q, want %q", app.Config.Upstream, upstream)
+	}
+}
+
+func TestUpdateProxyConfigDoesNotApplyRouteWhenFingerprintIsInvalid(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	if _, err := app.buildProxy(); err != nil {
+		t.Fatalf("buildProxy() error = %v", err)
+	}
+	fingerprintSpec := "not-a-fingerprint"
+	upstream := "socks5://127.0.0.1:1080"
+
+	if _, err := app.updateProxyConfig(webpanel.ConfigUpdate{TLSFingerprint: &fingerprintSpec, Upstream: &upstream}); err == nil {
+		t.Fatal("updateProxyConfig() error = nil, want validation error")
+	}
+	if got := app.UpstreamDialer.Upstream(); got != "" {
+		t.Fatalf("upstream = %q, invalid update was partially applied", got)
+	}
+}
+
+func TestUpdateProxyConfigRebindsProxyPort(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	if _, err := app.buildProxy(); err != nil {
+		t.Fatalf("buildProxy() error = %v", err)
+	}
+	initial, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen on initial socket: %v", err)
+	}
+	app.proxyListener = newRebindableListener(initial)
+	t.Cleanup(func() { _ = app.proxyListener.Close() })
+
+	available, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("find available port: %v", err)
+	}
+	port := available.Addr().(*net.TCPAddr).Port
+	_ = available.Close()
+
+	status, err := app.updateProxyConfig(webpanel.ConfigUpdate{ProxyPort: &port})
+	if err != nil {
+		t.Fatalf("updateProxyConfig() error = %v", err)
+	}
+	if status.ProxyPort != port {
+		t.Fatalf("proxy port = %d, want %d", status.ProxyPort, port)
+	}
+	if app.Config.Port != strconv.Itoa(port) {
+		t.Fatalf("config port = %q, want %d", app.Config.Port, port)
+	}
+	conn, err := net.DialTimeout("tcp", status.ProxyListen, time.Second)
+	if err != nil {
+		t.Fatalf("dial rebound listener: %v", err)
+	}
+	_ = conn.Close()
+}
+
+func TestUpdateProxyConfigKeepsCurrentPortWhenReplacementIsOccupied(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	initial, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen on initial socket: %v", err)
+	}
+	app.proxyListener = newRebindableListener(initial)
+	t.Cleanup(func() { _ = app.proxyListener.Close() })
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen on occupied socket: %v", err)
+	}
+	defer occupied.Close()
+	port := occupied.Addr().(*net.TCPAddr).Port
+	current := app.proxyListener.Addr().String()
+
+	if _, err := app.updateProxyConfig(webpanel.ConfigUpdate{ProxyPort: &port}); err == nil {
+		t.Fatal("updateProxyConfig() error = nil, want occupied-port error")
+	}
+	if got := app.proxyListener.Addr().String(); got != current {
+		t.Fatalf("proxy listener = %q, want unchanged %q", got, current)
+	}
+}
+
+func TestUpdateProxyConfigChangesListenProtocol(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	base, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	app.protocolListener = httpproxy.NewMixedProxyListener(base, httpproxy.NewProxy(nil, nil, nil))
+	t.Cleanup(func() { _ = app.protocolListener.Close() })
+	protocol := httpproxy.ProtocolSOCKS5
+
+	status, err := app.updateProxyConfig(webpanel.ConfigUpdate{ProxyProtocol: &protocol})
+	if err != nil {
+		t.Fatalf("updateProxyConfig() error = %v", err)
+	}
+	if status.ProxyProtocol != httpproxy.ProtocolSOCKS5 || app.Config.ProxyProtocol != httpproxy.ProtocolSOCKS5 {
+		t.Fatalf("proxy protocol status/config = %q/%q, want socks5", status.ProxyProtocol, app.Config.ProxyProtocol)
+	}
+}
+
+func TestUpdateProxyConfigRejectsUnknownListenProtocol(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	base, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	app.protocolListener = httpproxy.NewMixedProxyListener(base, httpproxy.NewProxy(nil, nil, nil))
+	t.Cleanup(func() { _ = app.protocolListener.Close() })
+	protocol := "ftp"
+
+	if _, err := app.updateProxyConfig(webpanel.ConfigUpdate{ProxyProtocol: &protocol}); err == nil {
+		t.Fatal("updateProxyConfig() error = nil, want validation error")
+	}
+	if got := app.protocolListener.Protocol(); got != httpproxy.ProtocolMixed {
+		t.Fatalf("proxy protocol = %q, want unchanged mixed", got)
+	}
+}
+
+func TestRedactUpstreamHidesPasswordWithoutExplicitScheme(t *testing.T) {
+	if got := redactUpstream("user:secret@127.0.0.1:1080"); got != "socks5://user@127.0.0.1:1080" {
+		t.Fatalf("redactUpstream() = %q", got)
+	}
+}
+
 func TestServeReturnsCanceledContext(t *testing.T) {
 	app := newRuntimeTestApp(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -378,5 +550,28 @@ func TestServeReturnsCanceledContext(t *testing.T) {
 	err := app.serve(ctx, httpproxy.NewProxy(nil, nil, nil))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("serve() error = %v, want context.Canceled", err)
+	}
+}
+
+func TestRunServicesStopsPeersWhenServiceFails(t *testing.T) {
+	wantErr := errors.New("panel failed")
+	peerStopped := make(chan struct{})
+
+	err := runServices(context.Background(),
+		func(context.Context) error { return wantErr },
+		func(ctx context.Context) error {
+			<-ctx.Done()
+			close(peerStopped)
+			return ctx.Err()
+		},
+	)
+
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runServices() error = %v, want %v", err, wantErr)
+	}
+	select {
+	case <-peerStopped:
+	default:
+		t.Fatal("peer service did not stop")
 	}
 }

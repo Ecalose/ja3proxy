@@ -27,8 +27,12 @@ func TestNewUpstreamDialerDirect(t *testing.T) {
 	if netDialer.Timeout != timeout {
 		t.Fatalf("net.Dialer timeout = %v, want %v", netDialer.Timeout, timeout)
 	}
-	if upstream.Transport != http.DefaultTransport {
-		t.Fatalf("upstream.Transport = %T, want http.DefaultTransport", upstream.Transport)
+	transport, ok := upstream.Transport.(*http.Transport)
+	if !ok || transport == http.DefaultTransport {
+		t.Fatalf("upstream.Transport = %T, want dedicated *http.Transport", upstream.Transport)
+	}
+	if transport.Proxy != nil {
+		t.Fatal("direct transport unexpectedly uses an environment proxy")
 	}
 }
 
@@ -183,5 +187,47 @@ func TestParseSocksURLPreservesAuthAndDefaultsScheme(t *testing.T) {
 	}
 	if password != "pass" {
 		t.Fatalf("password = %q, want pass", password)
+	}
+}
+
+func TestDynamicUpstreamDialerReconfiguresNewRequests(t *testing.T) {
+	dynamic, err := NewDynamicUpstreamDialer("", time.Second)
+	if err != nil {
+		t.Fatalf("NewDynamicUpstreamDialer() error = %v", err)
+	}
+	if err := dynamic.Configure("socks5://127.0.0.1:1080"); err != nil {
+		t.Fatalf("Configure() error = %v", err)
+	}
+	if got := dynamic.Upstream(); got != "socks5://127.0.0.1:1080" {
+		t.Fatalf("Upstream() = %q", got)
+	}
+	if err := dynamic.Configure(""); err != nil {
+		t.Fatalf("Configure(direct) error = %v", err)
+	}
+	if got := dynamic.Upstream(); got != "" {
+		t.Fatalf("Upstream() = %q, want direct", got)
+	}
+}
+
+func TestNewDynamicUpstreamDialerNormalizesInitialUpstream(t *testing.T) {
+	dynamic, err := NewDynamicUpstreamDialer("  socks5://127.0.0.1:1080  ", time.Second)
+	if err != nil {
+		t.Fatalf("NewDynamicUpstreamDialer() error = %v", err)
+	}
+	if got := dynamic.Upstream(); got != "socks5://127.0.0.1:1080" {
+		t.Fatalf("Upstream() = %q, want normalized address", got)
+	}
+}
+
+func TestDynamicUpstreamDialerKeepsConfigurationAfterInvalidUpdate(t *testing.T) {
+	dynamic, err := NewDynamicUpstreamDialer("socks5://127.0.0.1:1080", time.Second)
+	if err != nil {
+		t.Fatalf("NewDynamicUpstreamDialer() error = %v", err)
+	}
+	if err := dynamic.Configure("http://127.0.0.1:3128"); err == nil {
+		t.Fatal("Configure() error = nil, want unsupported scheme")
+	}
+	if got := dynamic.Upstream(); got != "socks5://127.0.0.1:1080" {
+		t.Fatalf("Upstream() = %q, previous configuration was lost", got)
 	}
 }

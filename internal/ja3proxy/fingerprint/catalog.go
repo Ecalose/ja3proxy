@@ -226,6 +226,22 @@ func FormatCatalog() string {
 	return formatTLSFingerprintCatalog()
 }
 
+// Presets returns every fingerprint shorthand accepted by ParseSpec. The
+// returned slice is detached from the internal catalog and is safe for callers
+// to modify.
+func Presets() []TLSFingerprint {
+	presets := make([]TLSFingerprint, 0)
+	for _, preset := range tlsFingerprintPresets {
+		for _, version := range preset.Versions {
+			presets = append(presets, TLSFingerprint{
+				Client:  preset.Client,
+				Version: version,
+			})
+		}
+	}
+	return presets
+}
+
 func availableTLSFingerprintClients() string {
 	clients := make([]string, 0, len(tlsFingerprintPresets))
 	for _, preset := range tlsFingerprintPresets {

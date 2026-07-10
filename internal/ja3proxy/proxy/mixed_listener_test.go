@@ -91,3 +91,45 @@ func TestMixedProxyListenerAddrAndClose(t *testing.T) {
 		t.Fatalf("Accept() error = %v, want %v", err, net.ErrClosed)
 	}
 }
+
+func TestMixedProxyListenerProtocolModesRejectOtherHandshake(t *testing.T) {
+	tests := []struct {
+		name     string
+		protocol string
+		first    byte
+	}{
+		{name: "HTTP rejects SOCKS5", protocol: ProtocolHTTP, first: socks5Version},
+		{name: "SOCKS5 rejects HTTP", protocol: ProtocolSOCKS5, first: 'G'},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			listener := &MixedProxyListener{
+				proxy:     NewProxy(nil, nil, nil),
+				httpConns: make(chan net.Conn, 1),
+				done:      make(chan struct{}),
+			}
+			if err := listener.SetProtocol(tt.protocol); err != nil {
+				t.Fatalf("SetProtocol() error = %v", err)
+			}
+			serverConn, clientConn := net.Pipe()
+			defer clientConn.Close()
+			go listener.route(serverConn)
+			if _, err := clientConn.Write([]byte{tt.first}); err != nil {
+				t.Fatalf("write handshake: %v", err)
+			}
+			if err := clientConn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+				t.Fatalf("set read deadline: %v", err)
+			}
+			if _, err := clientConn.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+				t.Fatalf("rejected handshake read error = %v, want EOF", err)
+			}
+		})
+	}
+}
+
+func TestMixedProxyListenerRejectsUnknownProtocol(t *testing.T) {
+	listener := &MixedProxyListener{}
+	if err := listener.SetProtocol("ftp"); err == nil {
+		t.Fatal("SetProtocol() error = nil, want unsupported protocol error")
+	}
+}

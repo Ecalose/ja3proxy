@@ -15,4 +15,6 @@ type RunningConfig struct {
 	Key               string
 	Upstream          string
 	TUI               bool
+	WebPanel          string
+	ProxyProtocol     string
 }

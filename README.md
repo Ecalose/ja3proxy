@@ -38,7 +38,7 @@ certificate or explicitly skip certificate verification for testing.
 
 Requirements:
 
-- Go 1.24 or newer
+- Go 1.26.5 or newer
 - `make` if you want to use the provided Makefile
 
 ```bash
@@ -286,8 +286,14 @@ can skip verification.
 Run the test suite:
 
 ```bash
-go test ./...
+go mod verify
+go vet ./...
+go test -count=1 ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 ```
+
+Alternatively, `make verify` runs the same module, vet, test, and vulnerability
+checks.
 
 Build release binaries with the Makefile:
 
@@ -296,6 +302,8 @@ make
 ```
 
 This creates Linux and Windows AMD64 binaries in the `bin/` directory.
+Release archives include a matching `.sha256` checksum. Stable releases also
+publish multi-platform container images with SBOM and provenance attestations.
 
 ## Security notice
 

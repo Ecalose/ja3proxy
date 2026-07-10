@@ -142,3 +142,42 @@ func TestStateAPIAllowsNilMonitor(t *testing.T) {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
 }
+
+func TestCompactPanelSnapshotBoundsEachVisibleSessionFilter(t *testing.T) {
+	snapshot := traffic.TrafficSnapshot{}
+	for id := uint64(1); id <= 150; id++ {
+		state := traffic.StateClosed
+		switch {
+		case id <= 50:
+			state = traffic.StateActive
+		case id > 100:
+			state = traffic.StateFailed
+		}
+		snapshot.Sessions = append(snapshot.Sessions, traffic.TrafficSessionSnapshot{ID: id, State: state})
+	}
+	for id := uint64(1); id <= 25; id++ {
+		snapshot.Events = append(snapshot.Events, traffic.TrafficEventSnapshot{SessionID: id})
+	}
+
+	compactPanelSnapshot(&snapshot)
+
+	if len(snapshot.Sessions) != 80 {
+		t.Fatalf("sessions = %d, want 80 (40 active + 40 failed)", len(snapshot.Sessions))
+	}
+	active := 0
+	failed := 0
+	for _, session := range snapshot.Sessions {
+		if session.State == traffic.StateActive {
+			active++
+		}
+		if session.State == traffic.StateFailed {
+			failed++
+		}
+	}
+	if active != panelSessionLimit || failed != panelSessionLimit {
+		t.Fatalf("active/failed = %d/%d, want %d/%d", active, failed, panelSessionLimit, panelSessionLimit)
+	}
+	if len(snapshot.Events) != panelEventLimit || snapshot.Events[0].SessionID != 16 || snapshot.Events[9].SessionID != 25 {
+		t.Fatalf("events = %+v, want the latest %d", snapshot.Events, panelEventLimit)
+	}
+}

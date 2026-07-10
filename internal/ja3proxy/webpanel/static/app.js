@@ -1,5 +1,5 @@
 const elements = Object.fromEntries([
-  "connection", "proxy-listen", "proxy-protocol", "fingerprint", "upstream", "upload-rate",
+  "connection", "route-chain", "upload-rate",
   "download-rate", "active-sessions", "total-sessions", "total-upload",
   "total-download", "uptime", "sessions", "events", "error-toast",
   "config-form", "tls-fingerprint", "proxy-protocol-choice", "traffic-page", "settings-page",
@@ -11,6 +11,10 @@ let previous = null;
 let filter = "all";
 let configInitialized = false;
 let configuredProxyAuthEnabled = false;
+let lastEventsSignature = "";
+let lastRouteSignature = "";
+let refreshPromise = null;
+let refreshTimer = null;
 
 const escapeHTML = value => String(value ?? "")
   .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
@@ -40,35 +44,107 @@ function uptime(from) {
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
 
+function createSessionRow(sessionID) {
+  const row = document.createElement("tr");
+  row.dataset.sessionId = String(sessionID);
+  row.innerHTML = `<td data-label="State"><span class="state"></span></td>
+    <td data-label="Protocol"></td>
+    <td class="target-cell" data-label="Destination"><strong></strong><small></small></td>
+    <td data-label="Client"></td>
+    <td data-label="Transfer"></td>
+    <td class="age-cell" data-label="Age"></td>`;
+  return row;
+}
+
+function updateSessionRow(row, session) {
+  const state = session.state || "closed";
+  const stateClass = ["active", "closed", "failed"].includes(state) ? state : "closed";
+  const detail = session.sni && session.sni !== session.target ? session.sni : (session.error || "");
+  const cells = row.cells;
+  const stateBadge = cells[0].firstElementChild;
+  const target = cells[2];
+
+  row.title = session.error || "";
+  stateBadge.className = `state state-${stateClass}`;
+  stateBadge.textContent = state;
+  cells[1].textContent = session.protocol || "—";
+  target.firstElementChild.textContent = session.target || "—";
+  target.lastElementChild.textContent = detail;
+  target.lastElementChild.hidden = !detail;
+  cells[3].textContent = session.clientAddr || "—";
+  cells[4].textContent = `${formatBytes(session.uploadBytes)} ↑ · ${formatBytes(session.downloadBytes)} ↓`;
+  cells[5].dataset.startedAt = session.startedAt;
+  cells[5].textContent = elapsed(session.startedAt);
+}
+
+function visibleSessions(sessions) {
+  const visible = [];
+  for (const session of sessions || []) {
+    if (filter !== "all" && session.state !== filter) continue;
+    visible.push(session);
+    if (visible.length === 40) break;
+  }
+  return visible;
+}
+
 function renderSessions(sessions) {
-  const visible = (sessions || []).filter(session => filter === "all" || session.state === filter).slice(0, 40);
+  const visible = visibleSessions(sessions);
   if (!visible.length) {
-    elements.sessions.innerHTML = `<tr><td colspan="6" class="empty">${filter === "all" ? "Waiting for the first connection." : `No ${escapeHTML(filter)} sessions.`}</td></tr>`;
+    const title = filter === "all" ? "No traffic yet" : `No ${escapeHTML(filter)} sessions`;
+    const detail = filter === "all" ? "Connect a client to JA3Proxy and sessions will appear here." : "Try another filter or wait for new traffic.";
+    elements.sessions.innerHTML = `<tr><td colspan="6" class="empty"><strong>${title}</strong><span>${detail}</span></td></tr>`;
     return;
   }
-  elements.sessions.innerHTML = visible.map(session => {
-    const state = escapeHTML(session.state || "closed");
-    const traffic = `${formatBytes(session.uploadBytes)} ↑ · ${formatBytes(session.downloadBytes)} ↓`;
-    const detail = session.sni && session.sni !== session.target ? session.sni : (session.error || "");
-    return `<tr title="${escapeHTML(session.error)}">
-      <td><span class="state state-${state}">${state}</span></td>
-      <td>${escapeHTML(session.protocol || "—")}</td>
-      <td class="target-cell"><strong>${escapeHTML(session.target || "—")}</strong>${detail ? `<small>${escapeHTML(detail)}</small>` : ""}</td>
-      <td>${escapeHTML(session.clientAddr || "—")}</td>
-      <td>${traffic}</td>
-      <td>${elapsed(session.startedAt)}</td>
-    </tr>`;
-  }).join("");
+
+  const existingRows = new Map([...elements.sessions.rows]
+    .filter(row => row.dataset.sessionId)
+    .map(row => [row.dataset.sessionId, row]));
+  const fragment = document.createDocumentFragment();
+  for (const session of visible) {
+    const sessionID = String(session.id);
+    const row = existingRows.get(sessionID) || createSessionRow(sessionID);
+    updateSessionRow(row, session);
+    fragment.append(row);
+  }
+  elements.sessions.replaceChildren(fragment);
 }
 
 function renderEvents(events) {
   const visible = [...(events || [])].reverse().slice(0, 10);
-  if (!visible.length) { elements.events.innerHTML = '<li class="empty">No events recorded.</li>'; return; }
+  const signature = JSON.stringify(visible);
+  if (signature === lastEventsSignature) return;
+  lastEventsSignature = signature;
+  if (!visible.length) { elements.events.innerHTML = '<li class="empty"><strong>All quiet</strong><span>Runtime events will be recorded here.</span></li>'; return; }
   elements.events.innerHTML = visible.map(event => `<li class="${event.level === "warn" ? "warn" : ""}">
     <time>${new Date(event.time).toLocaleTimeString([], { hour12: false })}</time>
     <strong>${escapeHTML(event.message)}</strong>
     <p>${escapeHTML(event.target || event.error || event.protocol || "Runtime event")}</p>
   </li>`).join("");
+}
+
+function renderRoute(runtime) {
+  const protocolLabels = { mixed: "HTTP + SOCKS5", http: "HTTP", socks5: "SOCKS5" };
+  const fallback = [
+    { role: "Client", address: "Proxy client" },
+    { role: "JA3Proxy", address: runtime.proxyListen || "—" },
+    { role: "Route", address: runtime.upstream || "Direct connection" },
+    { role: "Target", address: "Requested destination" }
+  ];
+  const chain = runtime.chain?.length ? runtime.chain : fallback;
+  const signature = JSON.stringify([chain, runtime.proxyProtocol, runtime.tlsClient, runtime.tlsVersion]);
+  if (signature === lastRouteSignature) return;
+  lastRouteSignature = signature;
+  elements["route-chain"].innerHTML = chain.map((hop, index) => {
+    const proxy = String(hop.role).toLowerCase() === "ja3proxy";
+    const identity = `${runtime.tlsClient || "—"}@${runtime.tlsVersion || "—"}`;
+    const protocol = protocolLabels[runtime.proxyProtocol] || "HTTP + SOCKS5";
+    return `<li class="${proxy ? "route-proxy" : ""}">
+      <span class="route-index">${String(index + 1).padStart(2, "0")}</span>
+      <strong>${escapeHTML(hop.role || "Hop")}</strong>
+      <small>${escapeHTML(hop.address || "—")}</small>
+      ${proxy ? `<em>${escapeHTML(protocol)} · ${escapeHTML(identity)}</em>` : ""}
+    </li>`;
+  }).join("");
 }
 
 function setSelectOptions(select, options, selected) {
@@ -121,11 +197,7 @@ function render(data) {
     downloadRate = Math.max(0, (traffic.totalDownloadBytes - previous.totalDownloadBytes) / interval);
   }
 
-  elements["proxy-listen"].textContent = runtime.proxyListen || "—";
-  const protocolLabels = { mixed: "HTTP + SOCKS5", http: "HTTP", socks5: "SOCKS5" };
-  elements["proxy-protocol"].textContent = protocolLabels[runtime.proxyProtocol] || "HTTP + SOCKS5";
-  elements.fingerprint.textContent = `${runtime.tlsClient || "—"}@${runtime.tlsVersion || "—"}`;
-  elements.upstream.textContent = runtime.upstream || "DIRECT";
+  renderRoute(runtime);
   elements["upload-rate"].textContent = formatBytes(uploadRate, "/s");
   elements["download-rate"].textContent = formatBytes(downloadRate, "/s");
   elements["active-sessions"].textContent = traffic.activeSessions.toLocaleString();
@@ -139,7 +211,7 @@ function render(data) {
   previous = traffic;
 }
 
-async function refresh() {
+async function refreshState() {
   try {
     const response = await fetch("/api/state", { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -152,6 +224,23 @@ async function refresh() {
     elements.connection.innerHTML = "<i></i>Signal lost";
     elements["error-toast"].classList.add("show");
   }
+}
+
+function refresh() {
+  if (!refreshPromise) {
+    refreshPromise = refreshState().finally(() => { refreshPromise = null; });
+  }
+  return refreshPromise;
+}
+
+function scheduleRefresh(delay = document.hidden ? 5000 : 1000) {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(runRefreshLoop, delay);
+}
+
+async function runRefreshLoop() {
+  await refresh();
+  scheduleRefresh();
 }
 
 document.querySelectorAll("[data-filter]").forEach(button => button.addEventListener("click", () => {
@@ -279,5 +368,5 @@ elements["config-form"].addEventListener("submit", async event => {
 });
 
 activateTab(location.hash === "#settings" ? "settings" : "traffic", false);
-refresh();
-setInterval(refresh, 1000);
+document.addEventListener("visibilitychange", () => scheduleRefresh(document.hidden ? 5000 : 0));
+runRefreshLoop();

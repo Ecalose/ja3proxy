@@ -65,6 +65,11 @@ type stateResponse struct {
 	Traffic traffic.TrafficSnapshot `json:"traffic"`
 }
 
+const (
+	panelSessionLimit = 40
+	panelEventLimit   = 10
+)
+
 func (panel Server) Serve(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -169,11 +174,48 @@ func (panel Server) handleState(response http.ResponseWriter, _ *http.Request) {
 		runtimeStatus = panel.Runtime()
 	}
 	snapshot := panel.Monitor.Snapshot()
+	compactPanelSnapshot(&snapshot)
 	if err := json.NewEncoder(response).Encode(stateResponse{
 		Runtime: runtimeStatus,
 		Traffic: snapshot,
 	}); err != nil {
 		logutil.Warn("webpanel", "failed writing panel state", "error", err)
+	}
+}
+
+func compactPanelSnapshot(snapshot *traffic.TrafficSnapshot) {
+	if snapshot == nil {
+		return
+	}
+
+	sessions := make([]traffic.TrafficSessionSnapshot, 0, panelSessionLimit*3)
+	allCount := 0
+	activeCount := 0
+	failedCount := 0
+	for _, session := range snapshot.Sessions {
+		include := allCount < panelSessionLimit
+		if allCount < panelSessionLimit {
+			allCount++
+		}
+		if session.State == traffic.StateActive && activeCount < panelSessionLimit {
+			activeCount++
+			include = true
+		}
+		if session.State == traffic.StateFailed && failedCount < panelSessionLimit {
+			failedCount++
+			include = true
+		}
+		if include {
+			sessions = append(sessions, session)
+		}
+		if allCount == panelSessionLimit && activeCount == panelSessionLimit && failedCount == panelSessionLimit {
+			break
+		}
+	}
+	snapshot.Sessions = sessions
+
+	if len(snapshot.Events) > panelEventLimit {
+		snapshot.Events = snapshot.Events[len(snapshot.Events)-panelEventLimit:]
 	}
 }
 

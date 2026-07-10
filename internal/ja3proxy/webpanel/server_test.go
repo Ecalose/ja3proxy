@@ -23,7 +23,7 @@ func TestHandlerServesPanel(t *testing.T) {
 	if !strings.Contains(response.Body.String(), "JA3Proxy / Traffic desk") {
 		t.Fatal("response does not contain panel title")
 	}
-	if !strings.Contains(response.Body.String(), `id="proxy-port"`) || !strings.Contains(response.Body.String(), `id="proxy-protocol-choice"`) || !strings.Contains(response.Body.String(), `id="tls-fingerprint"`) || !strings.Contains(response.Body.String(), `id="upstream-choice"`) {
+	if !strings.Contains(response.Body.String(), `id="proxy-port"`) || !strings.Contains(response.Body.String(), `id="proxy-protocol-choice"`) || !strings.Contains(response.Body.String(), `id="tls-fingerprint"`) || !strings.Contains(response.Body.String(), `id="upstream-choice"`) || !strings.Contains(response.Body.String(), `id="proxy-auth-choice"`) || !strings.Contains(response.Body.String(), `id="proxy-password"`) {
 		t.Fatal("response does not contain runtime configuration selects")
 	}
 	if got := response.Header().Get("Content-Security-Policy"); !strings.Contains(got, "default-src 'self'") {
@@ -37,7 +37,7 @@ func TestConfigAPIUpdatesRuntimeConfiguration(t *testing.T) {
 		received = update
 		return RuntimeStatus{TLSClient: "Chrome", TLSVersion: "120", UpstreamEnabled: true}, nil
 	}}
-	request := httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewBufferString(`{"proxyPort":8181,"proxyProtocol":"socks5","tlsFingerprint":"chrome@120","upstream":"socks5://127.0.0.1:1080"}`))
+	request := httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewBufferString(`{"proxyPort":8181,"proxyProtocol":"socks5","tlsFingerprint":"chrome@120","upstream":"socks5://127.0.0.1:1080","proxyAuthEnabled":true,"proxyUsername":"client","proxyPassword":"secret"}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 
@@ -57,6 +57,15 @@ func TestConfigAPIUpdatesRuntimeConfiguration(t *testing.T) {
 	}
 	if received.ProxyProtocol == nil || *received.ProxyProtocol != "socks5" {
 		t.Fatalf("proxy protocol update = %#v", received.ProxyProtocol)
+	}
+	if received.ProxyAuthEnabled == nil || !*received.ProxyAuthEnabled {
+		t.Fatalf("proxy auth enabled update = %#v", received.ProxyAuthEnabled)
+	}
+	if received.ProxyUsername == nil || *received.ProxyUsername != "client" {
+		t.Fatalf("proxy username update = %#v", received.ProxyUsername)
+	}
+	if received.ProxyPassword == nil || *received.ProxyPassword != "secret" {
+		t.Fatalf("proxy password update = %#v", received.ProxyPassword)
 	}
 }
 

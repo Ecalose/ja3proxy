@@ -1,7 +1,10 @@
 package dialer
 
 import (
+	"bufio"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -26,18 +29,18 @@ type DynamicUpstreamDialer struct {
 	timeout  time.Duration
 }
 
-func NewDynamicUpstreamDialer(socksAddr string, timeout time.Duration) (*DynamicUpstreamDialer, error) {
-	socksAddr = strings.TrimSpace(socksAddr)
-	current, err := NewUpstreamDialer(socksAddr, timeout)
+func NewDynamicUpstreamDialer(upstream string, timeout time.Duration) (*DynamicUpstreamDialer, error) {
+	upstream = strings.TrimSpace(upstream)
+	current, err := NewUpstreamDialer(upstream, timeout)
 	if err != nil {
 		return nil, err
 	}
-	return &DynamicUpstreamDialer{current: current, upstream: socksAddr, timeout: timeout}, nil
+	return &DynamicUpstreamDialer{current: current, upstream: upstream, timeout: timeout}, nil
 }
 
-func (u *DynamicUpstreamDialer) Configure(socksAddr string) error {
-	socksAddr = strings.TrimSpace(socksAddr)
-	next, err := NewUpstreamDialer(socksAddr, u.timeout)
+func (u *DynamicUpstreamDialer) Configure(upstream string) error {
+	upstream = strings.TrimSpace(upstream)
+	next, err := NewUpstreamDialer(upstream, u.timeout)
 	if err != nil {
 		return err
 	}
@@ -45,7 +48,7 @@ func (u *DynamicUpstreamDialer) Configure(socksAddr string) error {
 	u.mu.Lock()
 	previous := u.current
 	u.current = next
-	u.upstream = socksAddr
+	u.upstream = upstream
 	u.mu.Unlock()
 
 	if previous != nil {
@@ -79,31 +82,35 @@ func (u *DynamicUpstreamDialer) RoundTrip(request *http.Request) (*http.Response
 	return current.Transport.RoundTrip(request)
 }
 
-func NewUpstreamDialer(socksAddr string, timeout time.Duration) (*UpstreamDialer, error) {
+func NewUpstreamDialer(upstream string, timeout time.Duration) (*UpstreamDialer, error) {
 	var dialer proxy.Dialer
 	var transport http.RoundTripper
 
-	if socksAddr != "" {
-		parsedURL, err := parseSocksURL(socksAddr)
+	if upstream != "" {
+		parsedURL, err := parseProxyURL(upstream)
 		if err != nil {
 			return nil, err
 		}
-		user := parsedURL.User.Username()
-		password, _ := parsedURL.User.Password()
-		socksDialer, err := proxy.SOCKS5(
-			"tcp", parsedURL.Host,
-			&proxy.Auth{User: user, Password: password},
-			proxy.Direct,
-		)
-		if err != nil {
-			return nil, err
+
+		switch parsedURL.Scheme {
+		case "socks5":
+			user := parsedURL.User.Username()
+			password, _ := parsedURL.User.Password()
+			socksDialer, err := proxy.SOCKS5(
+				"tcp", parsedURL.Host,
+				&proxy.Auth{User: user, Password: password},
+				&net.Dialer{Timeout: timeout},
+			)
+			if err != nil {
+				return nil, err
+			}
+			dialer = socksDialer
+		case "http":
+			dialer = &httpConnectDialer{proxyURL: parsedURL, timeout: timeout}
 		}
-		dialer = socksDialer
 
 		defaultTransport := http.DefaultTransport.(*http.Transport).Clone()
-		defaultTransport.Proxy = func(req *http.Request) (*url.URL, error) {
-			return parsedURL, nil
-		}
+		defaultTransport.Proxy = http.ProxyURL(parsedURL)
 		transport = defaultTransport
 	} else {
 		directDialer := &net.Dialer{Timeout: timeout}
@@ -120,10 +127,10 @@ func NewUpstreamDialer(socksAddr string, timeout time.Duration) (*UpstreamDialer
 	}, nil
 }
 
-func parseSocksURL(socksAddr string) (*url.URL, error) {
-	parsedURL, err := url.Parse(socksAddr)
-	if err != nil || !strings.Contains(socksAddr, "://") {
-		parsedURL, err = url.Parse("socks5://" + socksAddr)
+func parseProxyURL(upstream string) (*url.URL, error) {
+	parsedURL, err := url.Parse(upstream)
+	if err != nil || !strings.Contains(upstream, "://") {
+		parsedURL, err = url.Parse("socks5://" + upstream)
 		if err != nil {
 			return nil, err
 		}
@@ -131,13 +138,96 @@ func parseSocksURL(socksAddr string) (*url.URL, error) {
 	if parsedURL.Scheme == "" {
 		parsedURL.Scheme = "socks5"
 	}
-	if parsedURL.Scheme != "socks5" {
+	parsedURL.Scheme = strings.ToLower(parsedURL.Scheme)
+	if parsedURL.Scheme != "socks5" && parsedURL.Scheme != "http" {
 		return nil, fmt.Errorf("unsupported upstream proxy scheme %q", parsedURL.Scheme)
 	}
 	if parsedURL.Host == "" {
 		return nil, fmt.Errorf("missing upstream proxy host")
 	}
 	return parsedURL, nil
+}
+
+// parseSocksURL is kept for callers that rely on host:port defaulting to SOCKS5.
+func parseSocksURL(socksAddr string) (*url.URL, error) {
+	return parseProxyURL(socksAddr)
+}
+
+type httpConnectDialer struct {
+	proxyURL *url.URL
+	timeout  time.Duration
+}
+
+func (dialer *httpConnectDialer) Dial(network, addr string) (net.Conn, error) {
+	if network != "tcp" && network != "tcp4" && network != "tcp6" {
+		return nil, fmt.Errorf("HTTP proxy CONNECT does not support network %q", network)
+	}
+
+	conn, err := (&net.Dialer{Timeout: dialer.timeout}).Dial("tcp", dialer.proxyURL.Host)
+	if err != nil {
+		return nil, fmt.Errorf("dial HTTP proxy %s: %w", dialer.proxyURL.Host, err)
+	}
+	succeeded := false
+	defer func() {
+		if !succeeded {
+			_ = conn.Close()
+		}
+	}()
+
+	if dialer.timeout > 0 {
+		if err := conn.SetDeadline(time.Now().Add(dialer.timeout)); err != nil {
+			return nil, err
+		}
+	}
+	request := &http.Request{
+		Method: http.MethodConnect,
+		URL:    &url.URL{Opaque: addr},
+		Host:   addr,
+		Header: make(http.Header),
+	}
+	if dialer.proxyURL.User != nil {
+		password, _ := dialer.proxyURL.User.Password()
+		token := base64.StdEncoding.EncodeToString([]byte(dialer.proxyURL.User.Username() + ":" + password))
+		request.Header.Set("Proxy-Authorization", "Basic "+token)
+	}
+	if err := request.Write(conn); err != nil {
+		return nil, fmt.Errorf("write HTTP proxy CONNECT request: %w", err)
+	}
+
+	reader := bufio.NewReader(conn)
+	response, err := http.ReadResponse(reader, request)
+	if err != nil {
+		return nil, fmt.Errorf("read HTTP proxy CONNECT response: %w", err)
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 4<<10))
+		_ = response.Body.Close()
+		if message := strings.TrimSpace(string(body)); message != "" {
+			return nil, fmt.Errorf("HTTP proxy CONNECT failed: %s: %s", response.Status, message)
+		}
+		return nil, fmt.Errorf("HTTP proxy CONNECT failed: %s", response.Status)
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		return nil, err
+	}
+
+	succeeded = true
+	if reader.Buffered() > 0 {
+		return &bufferedConn{Conn: conn, reader: reader}, nil
+	}
+	return conn, nil
+}
+
+type bufferedConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (conn *bufferedConn) Read(p []byte) (int, error) {
+	if conn.reader.Buffered() > 0 {
+		return conn.reader.Read(p)
+	}
+	return conn.Conn.Read(p)
 }
 
 func (u *UpstreamDialer) Dial(network, addr string) (net.Conn, error) {

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/logutil"
@@ -32,6 +33,8 @@ type Proxy struct {
 	tunnelConnect func(sni string, destConn net.Conn, clientConn net.Conn)
 	httpTransport http.RoundTripper
 	traffic       *traffic.TrafficMonitor
+	credentialsMu sync.RWMutex
+	credentials   proxyCredentials
 }
 
 func NewProxy(
@@ -63,6 +66,9 @@ func (p *Proxy) WithTrafficMonitor(monitor *traffic.TrafficMonitor) *Proxy {
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !p.authenticateHTTP(w, r) {
+		return
+	}
 	if r.Method == http.MethodConnect {
 		p.handleTunneling(w, r)
 		return

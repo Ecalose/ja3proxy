@@ -13,6 +13,17 @@ func writeSOCKS5Greeting(t *testing.T, conn net.Conn, method byte) {
 	}
 }
 
+func writeSOCKS5UserPassAuth(t *testing.T, conn net.Conn, username, password string) {
+	t.Helper()
+	request := []byte{socks5AuthVersion, byte(len(username))}
+	request = append(request, username...)
+	request = append(request, byte(len(password)))
+	request = append(request, password...)
+	if _, err := conn.Write(request); err != nil {
+		t.Fatalf("write SOCKS5 username/password authentication: %v", err)
+	}
+}
+
 func writeSOCKS5ConnectRequest(t *testing.T, conn net.Conn, host string, port uint16) {
 	t.Helper()
 	request := socks5RequestBytes(socks5Version, socks5Connect, socks5Reserved, socks5Domain, []byte(host), port)

@@ -152,6 +152,59 @@ func TestHandleSOCKS5RejectsUnsupportedAuth(t *testing.T) {
 	readExact(t, clientConn, []byte{socks5Version, socks5NoAcceptable})
 }
 
+func TestSOCKS5UsernamePasswordAuthentication(t *testing.T) {
+	tests := []struct {
+		name       string
+		username   string
+		password   string
+		wantStatus byte
+	}{
+		{name: "valid", username: "client", password: "secret", wantStatus: socks5AuthSuccess},
+		{name: "invalid", username: "client", password: "wrong", wantStatus: socks5AuthFailure},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			defer clientConn.Close()
+			defer serverConn.Close()
+			if err := clientConn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+				t.Fatalf("set deadline: %v", err)
+			}
+
+			proxy := NewProxy(nil, nil, nil).WithAuthentication("client", "secret")
+			result := make(chan error, 1)
+			go func() {
+				result <- proxy.negotiateSOCKS5(serverConn, bufio.NewReader(serverConn))
+			}()
+
+			writeSOCKS5Greeting(t, clientConn, socks5UserPassAuth)
+			readExact(t, clientConn, []byte{socks5Version, socks5UserPassAuth})
+			writeSOCKS5UserPassAuth(t, clientConn, tt.username, tt.password)
+			readExact(t, clientConn, []byte{socks5AuthVersion, tt.wantStatus})
+
+			err := <-result
+			if tt.wantStatus == socks5AuthSuccess && err != nil {
+				t.Fatalf("negotiateSOCKS5() error = %v", err)
+			}
+			if tt.wantStatus == socks5AuthFailure && err == nil {
+				t.Fatal("negotiateSOCKS5() error = nil, want authentication failure")
+			}
+		})
+	}
+}
+
+func TestSOCKS5AuthenticationDoesNotFallBackToNoAuth(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	proxy := NewProxy(nil, nil, nil).WithAuthentication("client", "secret")
+	go func() { _ = proxy.negotiateSOCKS5(serverConn, bufio.NewReader(serverConn)) }()
+
+	writeSOCKS5Greeting(t, clientConn, socks5NoAuth)
+	readExact(t, clientConn, []byte{socks5Version, socks5NoAcceptable})
+}
+
 func TestHandleSOCKS5RejectsUnsupportedCommand(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()

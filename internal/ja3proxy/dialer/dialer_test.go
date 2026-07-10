@@ -1,10 +1,13 @@
 package dialer
 
 import (
+	"bufio"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -114,7 +117,8 @@ func TestNewUpstreamDialerSocksURLValidation(t *testing.T) {
 		{name: "socks5 url", socksAddr: "socks5://127.0.0.1:1080"},
 		{name: "invalid url", socksAddr: "%", wantErr: true},
 		{name: "missing host", socksAddr: "socks5://", wantErr: true},
-		{name: "unsupported scheme", socksAddr: "http://127.0.0.1:1080", wantErr: true},
+		{name: "http url", socksAddr: "http://127.0.0.1:3128"},
+		{name: "unsupported scheme", socksAddr: "https://127.0.0.1:1080", wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -133,6 +137,117 @@ func TestNewUpstreamDialerSocksURLValidation(t *testing.T) {
 				t.Fatal("expected upstream dialer")
 			}
 		})
+	}
+}
+
+func TestHTTPUpstreamCONNECTWithAuthentication(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		defer conn.Close()
+		request, err := http.ReadRequest(bufio.NewReader(conn))
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		if request.Method != http.MethodConnect || request.Host != "example.com:443" {
+			serverErr <- fmt.Errorf("request = %s %s", request.Method, request.Host)
+			return
+		}
+		wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("user:pass"))
+		if got := request.Header.Get("Proxy-Authorization"); got != wantAuth {
+			serverErr <- fmt.Errorf("Proxy-Authorization = %q, want %q", got, wantAuth)
+			return
+		}
+		if _, err := conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\nprefetched")); err != nil {
+			serverErr <- err
+			return
+		}
+		payload := make([]byte, len("ping"))
+		if _, err := io.ReadFull(conn, payload); err != nil {
+			serverErr <- err
+			return
+		}
+		if string(payload) != "ping" {
+			serverErr <- fmt.Errorf("payload = %q", payload)
+			return
+		}
+		_, err = conn.Write([]byte("pong"))
+		serverErr <- err
+	}()
+
+	upstream, err := NewUpstreamDialer("http://user:pass@"+listener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatalf("NewUpstreamDialer() error = %v", err)
+	}
+	conn, err := upstream.Dial("tcp", "example.com:443")
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
+
+	prefetched := make([]byte, len("prefetched"))
+	if _, err := io.ReadFull(conn, prefetched); err != nil || string(prefetched) != "prefetched" {
+		t.Fatalf("prefetched data = %q, err = %v", prefetched, err)
+	}
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatalf("write tunnel: %v", err)
+	}
+	response := make([]byte, len("pong"))
+	if _, err := io.ReadFull(conn, response); err != nil || string(response) != "pong" {
+		t.Fatalf("tunnel response = %q, err = %v", response, err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatalf("HTTP proxy: %v", err)
+	}
+}
+
+func TestHTTPUpstreamForwardsPlainHTTPRequest(t *testing.T) {
+	requests := make(chan *http.Request, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		requests <- request.Clone(request.Context())
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	proxyURL := "http://user:pass@" + server.Listener.Addr().String()
+	upstream, err := NewUpstreamDialer(proxyURL, time.Second)
+	if err != nil {
+		t.Fatalf("NewUpstreamDialer() error = %v", err)
+	}
+	request, err := http.NewRequest(http.MethodGet, "http://example.com/resource", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	response, err := upstream.Transport.RoundTrip(request)
+	if err != nil {
+		t.Fatalf("RoundTrip() error = %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusNoContent)
+	}
+
+	forwarded := <-requests
+	if forwarded.URL.String() != "http://example.com/resource" {
+		t.Fatalf("forwarded URL = %q", forwarded.URL.String())
+	}
+	wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("user:pass"))
+	if got := forwarded.Header.Get("Proxy-Authorization"); got != wantAuth {
+		t.Fatalf("Proxy-Authorization = %q, want %q", got, wantAuth)
 	}
 }
 
@@ -224,7 +339,7 @@ func TestDynamicUpstreamDialerKeepsConfigurationAfterInvalidUpdate(t *testing.T)
 	if err != nil {
 		t.Fatalf("NewDynamicUpstreamDialer() error = %v", err)
 	}
-	if err := dynamic.Configure("http://127.0.0.1:3128"); err == nil {
+	if err := dynamic.Configure("https://127.0.0.1:3128"); err == nil {
 		t.Fatal("Configure() error = nil, want unsupported scheme")
 	}
 	if got := dynamic.Upstream(); got != "socks5://127.0.0.1:1080" {

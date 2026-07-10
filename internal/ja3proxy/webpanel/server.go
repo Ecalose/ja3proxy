@@ -29,6 +29,8 @@ type RuntimeStatus struct {
 	TLSFingerprints   []string   `json:"tlsFingerprints"`
 	Upstream          string     `json:"upstream"`
 	UpstreamEnabled   bool       `json:"upstreamEnabled"`
+	ProxyAuthEnabled  bool       `json:"proxyAuthEnabled"`
+	ProxyUsername     string     `json:"proxyUsername"`
 	ConfigurationMode string     `json:"configurationMode"`
 	Chain             []ChainHop `json:"chain"`
 }
@@ -39,10 +41,13 @@ type ChainHop struct {
 }
 
 type ConfigUpdate struct {
-	TLSFingerprint *string `json:"tlsFingerprint"`
-	Upstream       *string `json:"upstream"`
-	ProxyPort      *int    `json:"proxyPort"`
-	ProxyProtocol  *string `json:"proxyProtocol"`
+	TLSFingerprint   *string `json:"tlsFingerprint"`
+	Upstream         *string `json:"upstream"`
+	ProxyPort        *int    `json:"proxyPort"`
+	ProxyProtocol    *string `json:"proxyProtocol"`
+	ProxyAuthEnabled *bool   `json:"proxyAuthEnabled"`
+	ProxyUsername    *string `json:"proxyUsername"`
+	ProxyPassword    *string `json:"proxyPassword"`
 }
 
 type RuntimeProvider func() RuntimeStatus
@@ -126,7 +131,7 @@ func (panel Server) handleConfigUpdate(response http.ResponseWriter, request *ht
 		writeAPIError(response, http.StatusBadRequest, fmt.Sprintf("invalid configuration: %v", err))
 		return
 	}
-	if update.TLSFingerprint == nil && update.Upstream == nil && update.ProxyPort == nil && update.ProxyProtocol == nil {
+	if update.TLSFingerprint == nil && update.Upstream == nil && update.ProxyPort == nil && update.ProxyProtocol == nil && update.ProxyAuthEnabled == nil && update.ProxyUsername == nil && update.ProxyPassword == nil {
 		writeAPIError(response, http.StatusBadRequest, "no configuration fields were provided")
 		return
 	}

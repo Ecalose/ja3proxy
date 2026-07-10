@@ -18,7 +18,11 @@ import (
 const (
 	socks5Version      = 0x05
 	socks5NoAuth       = 0x00
+	socks5UserPassAuth = 0x02
 	socks5NoAcceptable = 0xff
+	socks5AuthVersion  = 0x01
+	socks5AuthSuccess  = 0x00
+	socks5AuthFailure  = 0x01
 	socks5Connect      = 0x01
 	socks5Reserved     = 0x00
 	socks5IPv4         = 0x01
@@ -66,7 +70,7 @@ func (p *Proxy) handleSOCKS5(conn net.Conn) {
 
 	logger := logutil.WithComponent("socks5")
 	reader := bufio.NewReader(conn)
-	if err := negotiateSOCKS5(conn, reader); err != nil {
+	if err := p.negotiateSOCKS5(conn, reader); err != nil {
 		logger.Warn("negotiation failed", "err", err)
 		return
 	}
@@ -116,7 +120,7 @@ func (p *Proxy) handleSOCKS5(conn net.Conn) {
 	})
 }
 
-func negotiateSOCKS5(conn net.Conn, reader *bufio.Reader) error {
+func (p *Proxy) negotiateSOCKS5(conn net.Conn, reader *bufio.Reader) error {
 	header := make([]byte, 2)
 	if _, err := io.ReadFull(reader, header); err != nil {
 		return err
@@ -129,15 +133,57 @@ func negotiateSOCKS5(conn net.Conn, reader *bufio.Reader) error {
 	if _, err := io.ReadFull(reader, methods); err != nil {
 		return err
 	}
+	requiredMethod := byte(socks5NoAuth)
+	credentials := p.authentication()
+	if credentials.enabled() {
+		requiredMethod = socks5UserPassAuth
+	}
 	for _, method := range methods {
-		if method == socks5NoAuth {
-			_, err := conn.Write([]byte{socks5Version, socks5NoAuth})
+		if method != requiredMethod {
+			continue
+		}
+		if _, err := conn.Write([]byte{socks5Version, requiredMethod}); err != nil {
 			return err
 		}
+		if requiredMethod == socks5UserPassAuth {
+			return authenticateSOCKS5(conn, reader, credentials)
+		}
+		return nil
 	}
 
 	_, _ = conn.Write([]byte{socks5Version, socks5NoAcceptable})
 	return fmt.Errorf("no supported authentication method")
+}
+
+func authenticateSOCKS5(conn net.Conn, reader *bufio.Reader, credentials proxyCredentials) error {
+	header := make([]byte, 2)
+	if _, err := io.ReadFull(reader, header); err != nil {
+		return err
+	}
+	if header[0] != socks5AuthVersion {
+		_, _ = conn.Write([]byte{socks5AuthVersion, socks5AuthFailure})
+		return fmt.Errorf("unsupported username/password authentication version %d", header[0])
+	}
+
+	username := make([]byte, int(header[1]))
+	if _, err := io.ReadFull(reader, username); err != nil {
+		return err
+	}
+	passwordLength, err := reader.ReadByte()
+	if err != nil {
+		return err
+	}
+	password := make([]byte, int(passwordLength))
+	if _, err := io.ReadFull(reader, password); err != nil {
+		return err
+	}
+	if !credentials.matches(string(username), string(password)) {
+		_, _ = conn.Write([]byte{socks5AuthVersion, socks5AuthFailure})
+		return fmt.Errorf("invalid username or password")
+	}
+
+	_, err = conn.Write([]byte{socks5AuthVersion, socks5AuthSuccess})
+	return err
 }
 
 func readSOCKS5Request(reader *bufio.Reader) (socks5Request, error) {

@@ -16,7 +16,8 @@ keeping familiar proxy interfaces for clients.
 - Customizable TLS ClientHello fingerprints through uTLS presets.
 - Dynamic MITM certificates for HTTPS `CONNECT` traffic.
 - Automatic local CA generation when no certificate/key pair is provided.
-- Optional SOCKS5 upstream proxy for both HTTP and HTTPS traffic.
+- Optional authentication for downstream HTTP and SOCKS5 clients.
+- Optional SOCKS5 or HTTP upstream proxy for HTTP, HTTPS, and TCP traffic.
 - Optional live TUI dashboard for active traffic and recent proxy events.
 - Optional embedded web panel for traffic inspection and live proxy configuration.
 - Docker and Docker Compose examples included.
@@ -107,7 +108,9 @@ TLS fingerprint:
   --list-tls-fingerprints         list supported uTLS fingerprints and exit
 
 Proxy:
-  --upstream-proxy string         upstream SOCKS5 proxy, e.g. socks5://127.0.0.1:1080
+  --proxy-username string         username required by downstream HTTP and SOCKS5 clients
+  --proxy-password string         password required by downstream HTTP and SOCKS5 clients
+  --upstream-proxy string         upstream SOCKS5 or HTTP proxy URL
 
 Diagnostics:
   --log-level string              log level: debug, info, warn, error (default "info")
@@ -131,8 +134,10 @@ Open `http://127.0.0.1:9090` to see active tunnels, aggregate upload and
 download totals, the current TLS fingerprint, recent sessions, and runtime
 events. The Settings tab can change the proxy port, choose mixed HTTP/SOCKS5,
 HTTP-only, or SOCKS5-only listening, select a TLS fingerprint preset, and switch
-between direct and SOCKS5 upstream routing. Changes apply to new connections
-without interrupting active sessions. When `--tls-fingerprint-file` is used,
+between direct, SOCKS5, and HTTP upstream routing. It can also enable, change,
+or disable downstream HTTP/SOCKS5 authentication without exposing the current
+password through the status API. Changes apply to new connections without
+interrupting active sessions. When `--tls-fingerprint-file` is used,
 that file remains the source of truth for the TLS fingerprint. Listen host and
 CA changes still require a restart.
 
@@ -142,6 +147,23 @@ frontend build or Node.js runtime. It can run alongside `--tui`.
 The panel has no authentication because it is intended as a local management
 surface. Keep it bound to a loopback address unless access is protected by a
 trusted reverse proxy or firewall.
+
+Require the same username and password from downstream HTTP and SOCKS5 clients:
+
+```bash
+./ja3proxy \
+  --listen :8080 \
+  --proxy-username client \
+  --proxy-password secret
+
+curl -v -k --proxy-user client:secret --proxy http://127.0.0.1:8080 https://www.example.com
+curl -v -k --proxy-user client:secret --proxy socks5h://127.0.0.1:8080 https://www.example.com
+```
+
+Both authentication flags must be provided together. HTTP clients use Basic
+proxy authentication, while SOCKS5 clients use username/password authentication
+as defined by RFC 1929. Without these flags, downstream proxy access remains
+unauthenticated.
 
 Example with a SOCKS5 upstream proxy:
 
@@ -153,7 +175,19 @@ Example with a SOCKS5 upstream proxy:
 ```
 
 The `--upstream-proxy` flag also accepts `host:port`, for example
-`127.0.0.1:1080`. Only SOCKS5 upstream proxies are supported.
+`127.0.0.1:1080`; values without a scheme default to SOCKS5. HTTP upstream
+proxies use CONNECT for tunneled TLS and TCP traffic:
+
+```bash
+./ja3proxy \
+  --listen :8080 \
+  --tls-fingerprint chrome@106 \
+  --upstream-proxy http://user:pass@127.0.0.1:3128
+```
+
+Supported upstream schemes are `socks5://` and `http://`. The upstream proxy
+must allow CONNECT to each requested destination port. TLS fingerprinting is
+performed inside the CONNECT tunnel and is therefore preserved.
 
 Global TLS fingerprint sources are mutually exclusive: use one of
 `--tls-fingerprint` or `--tls-fingerprint-file`.

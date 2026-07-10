@@ -30,6 +30,8 @@ type cliOptions struct {
 	tlsFingerprintFile  string
 	tlsProfileFile      string
 	upstreamProxy       string
+	proxyUsername       string
+	proxyPassword       string
 	logLevel            string
 	dumpTraffic         bool
 	tui                 bool
@@ -75,7 +77,9 @@ func registerCLIFlags(flags *flag.FlagSet, options *cliOptions) {
 	flags.StringVar(&options.tlsProfileFile, "tls-profile-file", "", "JSON file with host-routed upstream TLS profiles")
 	flags.BoolVar(&options.listTLSFingerprints, "list-tls-fingerprints", false, "list supported uTLS fingerprints and exit")
 
-	flags.StringVar(&options.upstreamProxy, "upstream-proxy", "", "upstream SOCKS5 proxy, e.g. socks5://127.0.0.1:1080")
+	flags.StringVar(&options.proxyUsername, "proxy-username", "", "username required by downstream HTTP and SOCKS5 clients")
+	flags.StringVar(&options.proxyPassword, "proxy-password", "", "password required by downstream HTTP and SOCKS5 clients")
+	flags.StringVar(&options.upstreamProxy, "upstream-proxy", "", "upstream SOCKS5 or HTTP proxy URL")
 
 	flags.StringVar(&options.logLevel, "log-level", defaultLogLevelName, "log level: debug, info, warn, error")
 	flags.BoolVar(&options.dumpTraffic, "dump-traffic", false, "log proxied payload data; sensitive; implies debug logging")
@@ -101,7 +105,9 @@ TLS fingerprint:
   --list-tls-fingerprints         list supported uTLS fingerprints and exit
 
 Proxy:
-  --upstream-proxy string         upstream SOCKS5 proxy, e.g. socks5://127.0.0.1:1080
+  --proxy-username string         username required by downstream HTTP and SOCKS5 clients
+  --proxy-password string         password required by downstream HTTP and SOCKS5 clients
+  --upstream-proxy string         upstream SOCKS5 or HTTP proxy URL
 
 Diagnostics:
   --log-level string              log level: debug, info, warn, error (default "info")
@@ -138,6 +144,11 @@ func applyCLIOptions(config *RunningConfig, options cliOptions, specified map[st
 	config.FingerprintConfig = options.tlsFingerprintFile
 	config.UpstreamTLSConfig = options.tlsProfileFile
 	config.Upstream = options.upstreamProxy
+	if err := validateProxyCredentials(options.proxyUsername, options.proxyPassword); err != nil {
+		return err
+	}
+	config.ProxyUsername = options.proxyUsername
+	config.ProxyPassword = options.proxyPassword
 	config.TUI = options.tui
 	config.WebPanel = options.webPanel
 
@@ -146,6 +157,22 @@ func applyCLIOptions(config *RunningConfig, options cliOptions, specified map[st
 	}
 	if err := applyDiagnosticOptions(config, options, specified); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateProxyCredentials(username, password string) error {
+	if (username == "") != (password == "") {
+		return fmt.Errorf("--proxy-username and --proxy-password must be used together")
+	}
+	if len(username) > 255 {
+		return fmt.Errorf("--proxy-username must be at most 255 bytes for SOCKS5 authentication")
+	}
+	if strings.Contains(username, ":") {
+		return fmt.Errorf("--proxy-username cannot contain ':' because HTTP Basic authentication uses it as a separator")
+	}
+	if len(password) > 255 {
+		return fmt.Errorf("--proxy-password must be at most 255 bytes for SOCKS5 authentication")
 	}
 	return nil
 }

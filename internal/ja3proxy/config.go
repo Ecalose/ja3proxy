@@ -14,6 +14,8 @@ type RunningConfig struct {
 	Cert              string
 	Key               string
 	Upstream          string
+	ProxyUsername     string
+	ProxyPassword     string
 	TUI               bool
 	WebPanel          string
 	ProxyProtocol     string

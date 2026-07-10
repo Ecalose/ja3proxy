@@ -35,6 +35,7 @@ type App struct {
 	UpstreamTLSProfiles *upstreamtls.UpstreamTLSProfileStore
 	TrafficMonitor      *traffic.TrafficMonitor
 	UpstreamDialer      *dialer.DynamicUpstreamDialer
+	ProxyServer         *httpproxy.Proxy
 	proxyListener       *rebindableListener
 	protocolListener    *httpproxy.MixedProxyListener
 	configMu            sync.Mutex
@@ -263,7 +264,9 @@ func (app *App) buildProxy() (*httpproxy.Proxy, error) {
 	}
 	app.UpstreamDialer = upstreamDialer
 
-	proxyServer := httpproxy.NewProxy(upstreamDialer.Dial, app.tunnelHandler().Connect, upstreamDialer)
+	proxyServer := httpproxy.NewProxy(upstreamDialer.Dial, app.tunnelHandler().Connect, upstreamDialer).
+		WithAuthentication(app.Config.ProxyUsername, app.Config.ProxyPassword)
+	app.ProxyServer = proxyServer
 	if app.TrafficMonitor != nil {
 		proxyServer.WithTrafficMonitor(app.TrafficMonitor)
 	}
@@ -277,6 +280,10 @@ func (app *App) updateProxyConfig(update webpanel.ConfigUpdate) (webpanel.Runtim
 	var nextFingerprint fingerprint.TLSFingerprint
 	var nextListener net.Listener
 	var nextListenAddress string
+	nextProxyUsername, nextProxyPassword, updateProxyAuth, err := app.resolveProxyAuthUpdate(update)
+	if err != nil {
+		return webpanel.RuntimeStatus{}, err
+	}
 	if update.ProxyProtocol != nil {
 		if app.protocolListener == nil {
 			return webpanel.RuntimeStatus{}, fmt.Errorf("proxy protocol listener is unavailable")
@@ -329,6 +336,11 @@ func (app *App) updateProxyConfig(update webpanel.ConfigUpdate) (webpanel.Runtim
 		}
 		app.Config.Upstream = app.UpstreamDialer.Upstream()
 	}
+	if updateProxyAuth {
+		app.ProxyServer.SetAuthentication(nextProxyUsername, nextProxyPassword)
+		app.Config.ProxyUsername = nextProxyUsername
+		app.Config.ProxyPassword = nextProxyPassword
+	}
 	if update.TLSFingerprint != nil {
 		app.TLSFingerprints.Set(nextFingerprint)
 	}
@@ -354,6 +366,41 @@ func (app *App) updateProxyConfig(update webpanel.ConfigUpdate) (webpanel.Runtim
 		app.TrafficMonitor.RecordEvent("info", "proxy configuration updated", traffic.TrafficSessionInfo{}, nil)
 	}
 	return status, nil
+}
+
+func (app *App) resolveProxyAuthUpdate(update webpanel.ConfigUpdate) (string, string, bool, error) {
+	requested := update.ProxyAuthEnabled != nil || update.ProxyUsername != nil || update.ProxyPassword != nil
+	if !requested {
+		return "", "", false, nil
+	}
+	if app.ProxyServer == nil {
+		return "", "", false, fmt.Errorf("proxy server is unavailable")
+	}
+
+	username := app.Config.ProxyUsername
+	password := app.Config.ProxyPassword
+	enabled := username != "" || password != ""
+	if update.ProxyAuthEnabled != nil {
+		enabled = *update.ProxyAuthEnabled
+	} else if !enabled && (update.ProxyUsername != nil || update.ProxyPassword != nil) {
+		enabled = true
+	}
+	if update.ProxyUsername != nil {
+		username = *update.ProxyUsername
+	}
+	if update.ProxyPassword != nil {
+		password = *update.ProxyPassword
+	}
+	if !enabled {
+		return "", "", true, nil
+	}
+	if username == "" || password == "" {
+		return "", "", false, fmt.Errorf("proxy authentication requires both a username and password")
+	}
+	if err := validateProxyCredentials(username, password); err != nil {
+		return "", "", false, err
+	}
+	return username, password, true, nil
 }
 
 func validateProxyProtocol(protocol string) error {
@@ -413,6 +460,8 @@ func (app *App) webPanelRuntimeStatusLocked() webpanel.RuntimeStatus {
 		TLSFingerprints:   fingerprintOptions,
 		Upstream:          displayUpstream,
 		UpstreamEnabled:   upstream != "",
+		ProxyAuthEnabled:  app.Config.ProxyUsername != "" || app.Config.ProxyPassword != "",
+		ProxyUsername:     app.Config.ProxyUsername,
 		ConfigurationMode: mode,
 		Chain: []webpanel.ChainHop{
 			{Role: "Client", Address: "Proxy client"},

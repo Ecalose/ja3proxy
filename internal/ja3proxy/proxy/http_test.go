@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/base64"
 	"errors"
 	"io"
 	"net/http"
@@ -11,6 +12,48 @@ import (
 
 	"github.com/lylemi/ja3proxy/internal/ja3proxy/traffic"
 )
+
+func TestHTTPProxyAuthentication(t *testing.T) {
+	called := false
+	proxy := NewProxy(nil, nil, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		called = true
+		if got := req.Header.Get("Proxy-Authorization"); got != "" {
+			t.Fatalf("Proxy-Authorization leaked upstream: %q", got)
+		}
+		return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: http.NoBody}, nil
+	})).WithAuthentication("client", "secret")
+
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+	token := base64.StdEncoding.EncodeToString([]byte("client:secret"))
+	request.Header.Set("Proxy-Authorization", "Basic "+token)
+	response := httptest.NewRecorder()
+	proxy.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
+	}
+	if !called {
+		t.Fatal("authenticated request was not forwarded")
+	}
+}
+
+func TestHTTPProxyAuthenticationRequired(t *testing.T) {
+	proxy := NewProxy(nil, nil, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatal("unauthenticated request must not be forwarded")
+		return nil, nil
+	})).WithAuthentication("client", "secret")
+
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+	response := httptest.NewRecorder()
+	proxy.ServeHTTP(response, request)
+
+	if response.Code != http.StatusProxyAuthRequired {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusProxyAuthRequired)
+	}
+	if got := response.Header().Get("Proxy-Authenticate"); got != proxyAuthRealm {
+		t.Fatalf("Proxy-Authenticate = %q, want %q", got, proxyAuthRealm)
+	}
+}
 
 func TestCopyHeader(t *testing.T) {
 	src := http.Header{}

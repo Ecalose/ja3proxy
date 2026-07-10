@@ -3,12 +3,14 @@ const elements = Object.fromEntries([
   "download-rate", "active-sessions", "total-sessions", "total-upload",
   "total-download", "uptime", "sessions", "events", "error-toast",
   "config-form", "tls-fingerprint", "proxy-protocol-choice", "traffic-page", "settings-page",
-  "upstream-choice", "upstream-field", "upstream-input", "config-note", "proxy-port"
+  "upstream-choice", "upstream-field", "upstream-input", "config-note", "proxy-port",
+  "proxy-auth-choice", "proxy-username-field", "proxy-username", "proxy-password-field", "proxy-password"
 ].map(id => [id, document.getElementById(id)]));
 
 let previous = null;
 let filter = "all";
 let configInitialized = false;
+let configuredProxyAuthEnabled = false;
 
 const escapeHTML = value => String(value ?? "")
   .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
@@ -87,10 +89,15 @@ function syncConfig(runtime, force = false) {
 
   elements["proxy-port"].value = runtime.proxyPort || "";
   elements["proxy-protocol-choice"].value = runtime.proxyProtocol || "mixed";
+  elements["proxy-auth-choice"].value = runtime.proxyAuthEnabled ? "enabled" : "disabled";
+  configuredProxyAuthEnabled = Boolean(runtime.proxyAuthEnabled);
+  elements["proxy-username"].value = runtime.proxyUsername || "";
+  elements["proxy-password"].value = "";
+  syncProxyAuthFields();
 
   const upstreamOptions = [{ value: "direct", label: "Direct connection" }];
   if (runtime.upstreamEnabled) upstreamOptions.push({ value: "current", label: runtime.upstream });
-  upstreamOptions.push({ value: "custom", label: "Custom SOCKS5…" });
+  upstreamOptions.push({ value: "custom", label: "Custom proxy…" });
   setSelectOptions(elements["upstream-choice"], upstreamOptions, runtime.upstreamEnabled ? "current" : "direct");
   elements["upstream-field"].hidden = true;
   elements["upstream-input"].value = "";
@@ -181,6 +188,17 @@ elements["upstream-choice"].addEventListener("change", () => {
   if (custom) elements["upstream-input"].focus();
 });
 
+function syncProxyAuthFields() {
+  const enabled = elements["proxy-auth-choice"].value === "enabled";
+  elements["proxy-username-field"].hidden = !enabled;
+  elements["proxy-password-field"].hidden = !enabled;
+}
+
+elements["proxy-auth-choice"].addEventListener("change", () => {
+  syncProxyAuthFields();
+  if (elements["proxy-auth-choice"].value === "enabled") elements["proxy-username"].focus();
+});
+
 elements["config-form"].addEventListener("submit", async event => {
   event.preventDefault();
   const submit = event.submitter;
@@ -194,6 +212,27 @@ elements["config-form"].addEventListener("submit", async event => {
   }
   payload.proxyPort = proxyPort;
   payload.proxyProtocol = elements["proxy-protocol-choice"].value;
+
+  const proxyAuthEnabled = elements["proxy-auth-choice"].value === "enabled";
+  payload.proxyAuthEnabled = proxyAuthEnabled;
+  if (proxyAuthEnabled) {
+    const username = elements["proxy-username"].value.trim();
+    if (!username) {
+      elements["config-note"].textContent = "Enter a client authentication username.";
+      elements["config-note"].className = "config-note error";
+      elements["proxy-username"].focus();
+      return;
+    }
+    payload.proxyUsername = username;
+    const password = elements["proxy-password"].value;
+    if (!configuredProxyAuthEnabled && !password) {
+      elements["config-note"].textContent = "Enter a client authentication password.";
+      elements["config-note"].className = "config-note error";
+      elements["proxy-password"].focus();
+      return;
+    }
+    if (password) payload.proxyPassword = password;
+  }
   if (!elements["tls-fingerprint"].disabled) payload.tlsFingerprint = elements["tls-fingerprint"].value;
 
   const upstreamChoice = elements["upstream-choice"].value;
@@ -201,7 +240,7 @@ elements["config-form"].addEventListener("submit", async event => {
   if (upstreamChoice === "custom") {
     const upstream = elements["upstream-input"].value.trim();
     if (!upstream) {
-      elements["config-note"].textContent = "Enter a SOCKS5 URL.";
+      elements["config-note"].textContent = "Enter a SOCKS5 or HTTP proxy URL.";
       elements["config-note"].className = "config-note error";
       elements["upstream-input"].focus();
       return;

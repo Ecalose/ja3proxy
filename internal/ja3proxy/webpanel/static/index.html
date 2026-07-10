@@ -92,13 +92,31 @@
           <label for="upstream-choice">Upstream route</label>
           <select id="upstream-choice" name="upstreamChoice">
             <option value="direct">Direct connection</option>
-            <option value="custom">Custom SOCKS5…</option>
+            <option value="custom">Custom proxy…</option>
           </select>
           <small>Send traffic directly or through another proxy.</small>
         </div>
+        <div class="setting-field">
+          <label for="proxy-auth-choice">Client authentication</label>
+          <select id="proxy-auth-choice" name="proxyAuthEnabled">
+            <option value="disabled">Disabled</option>
+            <option value="enabled">Username and password</option>
+          </select>
+          <small>Protect both downstream HTTP and SOCKS5 access.</small>
+        </div>
+        <div class="setting-field" id="proxy-username-field" hidden>
+          <label for="proxy-username">Client username</label>
+          <input id="proxy-username" name="proxyUsername" maxlength="255" autocomplete="off" spellcheck="false">
+          <small>The same username is used for HTTP Basic and SOCKS5 authentication.</small>
+        </div>
+        <div class="setting-field setting-wide" id="proxy-password-field" hidden>
+          <label for="proxy-password">Client password</label>
+          <input id="proxy-password" name="proxyPassword" type="password" maxlength="255" autocomplete="new-password">
+          <small>Leave blank to keep the current password. Passwords are never returned by the status API.</small>
+        </div>
         <div class="setting-field setting-wide" id="upstream-field" hidden>
-          <label for="upstream-input">SOCKS5 URL</label>
-          <input id="upstream-input" name="upstream" placeholder="socks5://127.0.0.1:1080" autocomplete="off" spellcheck="false">
+          <label for="upstream-input">SOCKS5 or HTTP proxy URL</label>
+          <input id="upstream-input" name="upstream" placeholder="http://127.0.0.1:3128" autocomplete="off" spellcheck="false">
         </div>
         <footer class="settings-actions">
           <p class="config-note" id="config-note" aria-live="polite">Review the values, then apply when ready.</p>

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"flag"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -87,6 +89,8 @@ func TestParseFlagsAppliesNormalizedArgs(t *testing.T) {
 		"--listen", "127.0.0.1:9090",
 		"--tls-fingerprint", "chrome@120",
 		"--tls-profile-file", "upstream-tls.json",
+		"--proxy-username", "client",
+		"--proxy-password", "secret",
 		"--upstream-proxy", "socks5://127.0.0.1:1080",
 		"--log-level", "warn",
 	})
@@ -124,6 +128,9 @@ func TestParseFlagsAppliesNormalizedArgs(t *testing.T) {
 	if app.Config.Upstream != "socks5://127.0.0.1:1080" {
 		t.Fatalf("upstream = %q, want socks5://127.0.0.1:1080", app.Config.Upstream)
 	}
+	if app.Config.ProxyUsername != "client" || app.Config.ProxyPassword != "secret" {
+		t.Fatalf("proxy credentials = %q/%q", app.Config.ProxyUsername, app.Config.ProxyPassword)
+	}
 	if app.Config.LogLevel != "warn" {
 		t.Fatalf("log level = %q, want warn", app.Config.LogLevel)
 	}
@@ -132,6 +139,28 @@ func TestParseFlagsAppliesNormalizedArgs(t *testing.T) {
 	}
 	if flag.CommandLine.Lookup("cert") != nil {
 		t.Fatal("parseFlags registered cert on global flag.CommandLine")
+	}
+}
+
+func TestParseFlagsValidatesProxyCredentials(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "username only", args: []string{"--proxy-username", "client"}},
+		{name: "password only", args: []string{"--proxy-password", "secret"}},
+		{name: "colon in username", args: []string{"--proxy-username", "bad:name", "--proxy-password", "secret"}},
+		{name: "username too long", args: []string{"--proxy-username", strings.Repeat("u", 256), "--proxy-password", "secret"}},
+		{name: "password too long", args: []string{"--proxy-username", "client", "--proxy-password", strings.Repeat("p", 256)}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := newRuntimeTestApp(t)
+			if err := app.parseFlags(tt.args); err == nil {
+				t.Fatal("parseFlags() error = nil, want credential validation error")
+			}
+		})
 	}
 }
 
@@ -368,7 +397,7 @@ func TestConfigureTLSFingerprintPassesContextToWatcher(t *testing.T) {
 
 func TestBuildProxyReturnsUpstreamValidationError(t *testing.T) {
 	app := newRuntimeTestApp(t)
-	app.Config.Upstream = "http://127.0.0.1:1080"
+	app.Config.Upstream = "https://127.0.0.1:1080"
 
 	proxy, err := app.buildProxy()
 	if err == nil {
@@ -420,6 +449,75 @@ func TestUpdateProxyConfigChangesFingerprintAndRoute(t *testing.T) {
 	}
 	if app.Config.Upstream != upstream {
 		t.Fatalf("config upstream = %q, want %q", app.Config.Upstream, upstream)
+	}
+}
+
+func TestUpdateProxyConfigChangesDownstreamAuthentication(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	if _, err := app.buildProxy(); err != nil {
+		t.Fatalf("buildProxy() error = %v", err)
+	}
+	enabled := true
+	username := "client"
+	password := "secret"
+	status, err := app.updateProxyConfig(webpanel.ConfigUpdate{
+		ProxyAuthEnabled: &enabled,
+		ProxyUsername:    &username,
+		ProxyPassword:    &password,
+	})
+	if err != nil {
+		t.Fatalf("enable proxy authentication: %v", err)
+	}
+	if !status.ProxyAuthEnabled || status.ProxyUsername != username {
+		t.Fatalf("runtime status = %+v", status)
+	}
+	if app.Config.ProxyUsername != username || app.Config.ProxyPassword != password {
+		t.Fatalf("configured credentials = %q/%q", app.Config.ProxyUsername, app.Config.ProxyPassword)
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+	response := httptest.NewRecorder()
+	app.ProxyServer.ServeHTTP(response, request)
+	if response.Code != http.StatusProxyAuthRequired {
+		t.Fatalf("unauthenticated HTTP status = %d, want %d", response.Code, http.StatusProxyAuthRequired)
+	}
+
+	nextUsername := "next-client"
+	status, err = app.updateProxyConfig(webpanel.ConfigUpdate{
+		ProxyAuthEnabled: &enabled,
+		ProxyUsername:    &nextUsername,
+	})
+	if err != nil {
+		t.Fatalf("change proxy username while preserving password: %v", err)
+	}
+	if status.ProxyUsername != nextUsername || app.Config.ProxyPassword != password {
+		t.Fatalf("updated credentials = %q/%q", app.Config.ProxyUsername, app.Config.ProxyPassword)
+	}
+
+	enabled = false
+	status, err = app.updateProxyConfig(webpanel.ConfigUpdate{ProxyAuthEnabled: &enabled})
+	if err != nil {
+		t.Fatalf("disable proxy authentication: %v", err)
+	}
+	if status.ProxyAuthEnabled || status.ProxyUsername != "" || app.Config.ProxyPassword != "" {
+		t.Fatalf("authentication was not cleared: status=%+v config=%+v", status, app.Config)
+	}
+}
+
+func TestUpdateProxyConfigRejectsIncompleteDownstreamAuthentication(t *testing.T) {
+	app := newRuntimeTestApp(t)
+	if _, err := app.buildProxy(); err != nil {
+		t.Fatalf("buildProxy() error = %v", err)
+	}
+	enabled := true
+	username := "client"
+	if _, err := app.updateProxyConfig(webpanel.ConfigUpdate{
+		ProxyAuthEnabled: &enabled,
+		ProxyUsername:    &username,
+	}); err == nil {
+		t.Fatal("updateProxyConfig() error = nil, want missing password error")
+	}
+	if app.Config.ProxyUsername != "" || app.Config.ProxyPassword != "" {
+		t.Fatalf("invalid credentials were applied: %+v", app.Config)
 	}
 }
 
